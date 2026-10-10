@@ -34,7 +34,9 @@ from backend import (
 )
 
 APP_NAME = "Dịch"
+APP_NAME = "Dịch"
 APP_TAGLINE = "Vietnamese → English translator"
+VERSION = backend.VERSION
 SUPPORTED_EXTS = [".txt", ".md", ".markdown", ".pdf", ".docx", ".docm", ".doc", ".rtf"]
 FILE_TYPES = [
     ("All supported files", " ".join(f"*{e}" for e in SUPPORTED_EXTS)),
@@ -224,7 +226,7 @@ class StatusBar(ttk.Frame):
 class DichApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title(f"{APP_NAME} · {APP_TAGLINE}")
+        self.root.title(f"{APP_NAME} {VERSION} · {APP_TAGLINE}")
         self.root.geometry("1280x820")
         self.root.configure(bg=BG)
 
@@ -268,7 +270,9 @@ class DichApp:
         titles = ttk.Frame(header)
         titles.pack(side="left")
         ttk.Label(titles, text=APP_NAME, style="App.TLabel").pack(anchor="w")
-        ttk.Label(titles, text=APP_TAGLINE, style="Tagline.TLabel").pack(anchor="w")
+        ttk.Label(
+            titles, text=f"{APP_TAGLINE} · v{VERSION}", style="Tagline.TLabel"
+        ).pack(anchor="w")
 
         self.health_dot = ttk.Label(header, text="●", style="Status.TLabel", foreground=YELLOW)
         self.health_dot.pack(side="right")

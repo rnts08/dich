@@ -54,6 +54,28 @@ def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
     return config
 
 
+VERSION_FILE = HERE / "VERSION"
+
+
+def get_version() -> str:
+    """
+    Read the app version from the VERSION file.
+
+    Returns "dev" when the file is missing or unparseable, so a fresh checkout
+    still reports something useful rather than crashing the UI.
+    """
+    try:
+        text = VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "dev"
+    if re.fullmatch(r"\d+\.\d+\.\d+", text):
+        return text
+    return "dev"
+
+
+VERSION = get_version()
+
+
 CONFIG = load_config()
 MODEL_NAME: str = CONFIG["model"]
 SOURCE_LANGUAGE: str = CONFIG["source_language"]
