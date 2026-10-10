@@ -27,7 +27,7 @@ is no separate server process to start.
 
 Two ways in:
 
-- **Record** — listens to the microphone, transcribes Vietnamese, and translates
+**Record** — listens to the microphone, transcribes Vietnamese, and translates
   as it goes.
 - **Open Audio…** — transcribes an audio file (`mp3`, `wav`, `m4a`, …). This uses
   `large-v3-turbo`, which is far more accurate in Vietnamese than the live model
@@ -45,6 +45,30 @@ Measured on a 150s Vietnamese sample (22 utterances): the first pass produced
 613 characters of fragment-by-fragment English; after the first block refinement
 it became 499 characters of coherent prose. The output gets *better*, not just
 longer.
+
+## Microphone settings
+
+In Settings → Microphone:
+
+| Setting | Meaning |
+|---|---|
+| **Input device** | Which microphone. *System default* follows macOS. |
+| **Speech model** | `tiny` → `large-v3-turbo`. Only runs while recording. |
+| **Refine every** | Utterances between block re-translations. |
+
+Resolution shows the actual sample rate, so a device that cannot do 16 kHz is
+visible before it fails. **Rescan** picks up mics plugged in or removed later,
+and keeps an unsaved selection.
+
+If a configured device disappears — unplugged, or device order changed — the
+engine falls back to the system default and logs why, rather than dying with a
+PortAudio error.
+
+Recording opens the microphone off the UI thread, because `sd.InputStream()`
+blocks until macOS decides whether to grant microphone permission. In a context
+where the permission prompt cannot appear, that open can block indefinitely, and
+on the UI thread it would freeze the window instead. The button is disabled while
+opening so a double-click cannot open two streams.
 
 ## Versioning and commits
 
