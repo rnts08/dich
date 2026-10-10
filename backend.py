@@ -1,0 +1,772 @@
+"""
+Backend for the translation tool.
+Loads models in-process with mlx_lm and renders each model's own chat template.
+
+NOTE ON MODELS:
+    mlx-lm only supports causal language models (llama, qwen, gemma, plamo2, ...).
+    Encoder-decoder models such as VTSNLP/trans_model_vi_en (T5) cannot be loaded:
+    "ValueError: Model type t5 not supported."
+    Dedicated MLX translation models (plamo-2-translate) are English<->Japanese only.
+    Models are configured in config.json, with fallback_models tried in order
+    when the primary model fails.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+import httpx
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+HERE = Path(__file__).parent
+CONFIG_PATH = HERE / "config.json"
+
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+    "port": 8000,
+    "source_language": "Vietnamese",
+    "target_language": "English",
+}
+
+
+def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
+    """Load configuration from config.json, merged over defaults."""
+    config = dict(DEFAULT_CONFIG)
+    path = path or CONFIG_PATH
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                config.update(json.load(f))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Could not read {path}: {e}. Using defaults.")
+    return config
+
+
+CONFIG = load_config()
+MODEL_NAME: str = CONFIG["model"]
+SOURCE_LANGUAGE: str = CONFIG["source_language"]
+TARGET_LANGUAGE: str = CONFIG["target_language"]
+
+
+def reload_config() -> Dict[str, Any]:
+    """
+    Re-read config.json, refresh the module-level settings and drop any cached
+    engines so the next translation loads the model actually configured.
+
+    Language-name changes only fully apply to labels on restart, since the UI
+    builds them at startup.
+    """
+    global CONFIG, MODEL_NAME, SOURCE_LANGUAGE, TARGET_LANGUAGE
+    CONFIG = load_config()
+    MODEL_NAME = CONFIG["model"]
+    SOURCE_LANGUAGE = CONFIG["source_language"]
+    TARGET_LANGUAGE = CONFIG["target_language"]
+
+    # Drop resident engines so a model switch takes effect immediately rather
+    # than silently reusing the previously loaded one.
+    engines = list(_ENGINES.values())
+    _ENGINES.clear()
+    for engine in engines:
+        engine.unload()
+    logger.info(f"Config reloaded; active model is now {MODEL_NAME}")
+    return CONFIG
+
+# Defaults for models with no dedicated profile. Models with a small context
+# window override these via MODEL_PROFILES.
+BATCH_SIZE = 24            # paragraphs per batch
+BATCH_CHAR_LIMIT = 8000    # characters per batch, keeps prompts under context limits
+
+# Cache: identical input + model + language pair never needs re-translating.
+CACHE_DIR = Path("/tmp/dich-cache")
+
+# ---------------------------------------------------------------------------
+# Per-model prompt strategies
+# ---------------------------------------------------------------------------
+# Different models expect fundamentally different request shapes. A generic
+# causal LLM takes a system prompt plus a plain string; TranslateGemma has its
+# own chat template that only accepts user/assistant roles, requires the text
+# inside a content list tagged with source/target language codes, and runs on a
+# much smaller context window.
+
+LANG_CODES = {
+    "Vietnamese": "vi",
+    "English": "en",
+    "Japanese": "ja",
+    "Chinese": "zh",
+    "Korean": "ko",
+    "French": "fr",
+    "German": "de",
+    "Spanish": "es",
+    "Russian": "ru",
+    "Thai": "th",
+}
+
+MODEL_PROFILES = {
+    "mlx-community/translategemma-4b-it-4bit": {
+        "prompt_style": "translategemma",
+        "batch_char_limit": 1400,   # model context is only ~2K tokens
+        "batch_size": 8,
+    },
+    "mlx-community/translategemma-12b-it-4bit": {
+        "prompt_style": "translategemma",
+        "batch_char_limit": 1400,
+        "batch_size": 8,
+    },
+}
+
+DEFAULT_PROFILE = {
+    "prompt_style": "chat",
+    "batch_char_limit": BATCH_CHAR_LIMIT,
+    "batch_size": BATCH_SIZE,
+}
+
+
+def _lang_code(language: str) -> str:
+    return LANG_CODES.get(language, language.lower()[:2])
+
+
+def get_profile(model: str) -> dict:
+    """Resolve the prompt strategy for a model, letting config.json override."""
+    profile = dict(DEFAULT_PROFILE)
+    profile.update(MODEL_PROFILES.get(model, {}))
+    # Explicit config values win over the built-in profile.
+    if model == MODEL_NAME and "prompt_style" in CONFIG:
+        profile["prompt_style"] = CONFIG["prompt_style"]
+    return profile
+
+
+def _cache_key(text: str) -> str:
+    """Hash of everything that affects the output for a given input."""
+    basis = f"{MODEL_NAME}|{SOURCE_LANGUAGE}|{TARGET_LANGUAGE}|{text}"
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def cache_get(text: str) -> Optional[str]:
+    key = _cache_key(text)
+    path = CACHE_DIR / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("translation")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def cache_put(text: str, translation: str) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        key = _cache_key(text)
+        path = CACHE_DIR / f"{key}.json"
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(
+                {"translation": translation, "model": MODEL_NAME, "key": key},
+                f, ensure_ascii=False,
+            )
+        tmp.replace(path)  # atomic, avoids half-written cache entries
+    except OSError as e:
+        logger.warning(f"Could not write translation cache: {e}")
+
+
+def cache_clear() -> int:
+    """Remove all cached translations. Returns how many were removed."""
+    if not CACHE_DIR.exists():
+        return 0
+    removed = 0
+    for p in CACHE_DIR.glob("*.json"):
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def cache_stats() -> Dict[str, Any]:
+    count = len(list(CACHE_DIR.glob("*.json"))) if CACHE_DIR.exists() else 0
+    return {"entries": count, "dir": str(CACHE_DIR)}
+
+
+# ---------------------------------------------------------------------------
+# Text extraction
+# ---------------------------------------------------------------------------
+
+def _read_pdf(file_path: str) -> str:
+    """Extract text from a PDF file."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        try:
+            import PyPDF2
+            with open(file_path, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                return "\n".join((p.extract_text() or "") for p in reader.pages)
+        except ImportError:
+            raise ImportError("PDF support needs pypdf: pip install pypdf")
+    reader = PdfReader(file_path)
+    return "\n".join((p.extract_text() or "") for p in reader.pages)
+
+
+def _read_docx(file_path: str) -> str:
+    """Extract text from a .docx / .docm file, including tables."""
+    import docx
+    document = docx.Document(file_path)
+    parts = [p.text for p in document.paragraphs]
+    for table in document.tables:
+        for row in table.rows:
+            parts.append("\t".join(c.text.strip() for c in row.cells))
+    return "\n".join(parts)
+
+
+def _read_doc(file_path: str) -> str:
+    """Extract text from a legacy binary .doc file using macOS textutil."""
+    import shutil
+    import subprocess
+    if shutil.which("textutil") is None:
+        raise ImportError("Legacy .doc needs macOS 'textutil' (or convert to .docx).")
+    result = subprocess.run(
+        ["textutil", "-convert", "txt", "-stdout", file_path],
+        capture_output=True, text=True, timeout=60, check=True,
+    )
+    return result.stdout
+
+
+def _read_rtf(file_path: str) -> str:
+    """Extract plain text from an RTF file by stripping control words."""
+    from striprtf.striprtf import rtf_to_text
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return rtf_to_text(f.read())
+
+
+def _read_markdown(file_path: str) -> str:
+    """Read markdown as plain text, preserving structure for the model to mirror."""
+    import markdown
+    with open(file_path, "r", encoding="utf-8") as f:
+        return markdown.markdown(f.read())
+
+
+def _read_text(file_path: str) -> str:
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+
+_EXTRACTORS = {
+    ".pdf": _read_pdf,
+    ".docx": _read_docx,
+    ".docm": _read_docx,
+    ".doc": _read_doc,
+    ".rtf": _read_rtf,
+    ".md": _read_markdown,
+    ".markdown": _read_markdown,
+    ".txt": _read_text,
+    ".text": _read_text,
+    "": _read_text,
+}
+
+
+def extract_text_from_file(file_path: str) -> str:
+    """Extract text from a file, dispatching on extension."""
+    ext = Path(file_path).suffix.lower()
+    extractor = _EXTRACTORS.get(ext)
+    if extractor is None:
+        raise ValueError(
+            f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(e for e in _EXTRACTORS if e))}"
+        )
+    return extractor(file_path)
+
+
+# ---------------------------------------------------------------------------
+# Prompting
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are a professional {source} ({source_native}) to {target} translator. "
+    "Translate the user's text into natural, idiomatic {target}.\n\n"
+    "Rules:\n"
+    "1. Translate by MEANING and CONCEPT, not word for word. Render idioms, "
+    "proverbs, honorifics and figurative language as a native {target} writer would.\n"
+    "2. Preserve formatting: keep line breaks, bullet lists, numbering, "
+    "headings and markdown structure in place.\n"
+    "3. Do NOT leave any {source} untranslated. Do NOT add explanations, "
+    "notes, transliterations or a preamble.\n"
+    "4. Output ONLY the {target} translation."
+)
+
+
+def _split_batches(text: str, size: int = BATCH_SIZE, char_limit: int = BATCH_CHAR_LIMIT) -> List[str]:
+    """Split text into paragraph-aligned batches, keeping each under a size cap."""
+    paragraphs = re.split(r"(\n\s*\n)", text)  # separators are kept in the list
+    if len(paragraphs) <= size:
+        return [text]
+    chunks, current = [], []
+    count, current_len = 0, 0
+    for part in paragraphs:
+        if count >= size or (current_len + len(part) > char_limit and current):
+            chunks.append("".join(current))
+            current, count, current_len = [], 0, 0
+        current.append(part)
+        if part.strip():
+            count += 1
+            current_len += len(part)
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
+# ---------------------------------------------------------------------------
+# Progress reporting
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Progress:
+    """Streamed back to the UI while a translation runs."""
+    done_batches: int = 0
+    total_batches: int = 0
+    words_translated: int = 0
+    words_total: int = 0
+    tokens_out: int = 0
+    tokens_per_second: float = 0.0
+    elapsed: float = 0.0
+    started_at: float = 0.0
+    events: List[str] = field(default_factory=list)
+
+    @property
+    def fraction(self) -> float:
+        if self.total_batches <= 0:
+            return 0.0
+        return self.done_batches / self.total_batches
+
+    @property
+    def percent(self) -> int:
+        """
+        Percentage of the way through the model work. Caps at 99 so the bar
+        never sits at "full" while output is still being stitched together;
+        the UI jumps to 100 when the final result arrives.
+        """
+        if self.total_batches <= 0:
+            return 0
+        return int(min(99, round(self.fraction * 95)))
+
+
+@dataclass
+class TranslationResult:
+    text: str
+    cached: bool = False
+    model: str = ""
+    fell_back: bool = False
+    words_in: int = 0
+    words_out: int = 0
+    tokens_out: int = 0
+    tokens_per_second: float = 0.0
+    elapsed: float = 0.0
+    batches: int = 1
+
+
+def count_words(text: str) -> int:
+    """Word count that works reasonably for Vietnamese (space-separated runs)."""
+    return len(re.findall(r"[^\s]+", text))
+
+
+# ---------------------------------------------------------------------------
+# Translation
+# ---------------------------------------------------------------------------
+# NOTE ON WHY THIS IS NOT AN HTTP SERVER:
+#   mlx_lm.server cannot carry every model's prompt format. Its
+#   process_message_content() collapses any `content` list into a plain string,
+#   which throws away the source_lang_code/target_lang_code that TranslateGemma's
+#   chat template requires. Loading models in-process with mlx_lm.load() keeps
+#   the full message structure intact (and gives streaming plus exact token
+#   counts), so translation runs in this process rather than over HTTP.
+
+_ENGINE_LOCK = threading.Lock()
+_ENGINES: Dict[str, "LocalEngine"] = {}
+
+
+class LocalEngine:
+    """Loads one model in-process and renders prompts with its own chat template."""
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self._model = None
+        self._tokenizer = None
+        self._load_lock = threading.Lock()
+
+    # -- lifecycle --------------------------------------------------------
+    @property
+    def loaded(self) -> bool:
+        return self._model is not None
+
+    def load(self):
+        """Load the model once and reuse it across requests."""
+        if self._model is not None:
+            return self._model, self._tokenizer
+        with self._load_lock:
+            if self._model is None:
+                from mlx_lm import load as mlx_load
+                logger.info(f"Loading model {self.model_name} ...")
+                started = time.time()
+                self._model, self._tokenizer = mlx_load(self.model_name)
+                self._align_stop_tokens()
+                logger.info(f"Loaded {self.model_name} in {time.time() - started:.1f}s")
+        return self._model, self._tokenizer
+
+    def _align_stop_tokens(self):
+        """
+        Teach the tokenizer this model's real stop token.
+
+        mlx-lm stops generation on `tokenizer.eos_token_ids`. Gemma-family chat
+        models actually end a turn with `<end_of_turn>`, which is NOT in that
+        set by default -- so generation would run to max_tokens, repeating the
+        marker forever. Without this, a short sentence cost ~10s and produced
+        thousands of junk characters.
+        """
+        try:
+            token_id = self._tokenizer.convert_tokens_to_ids("<end_of_turn>")
+        except Exception:  # noqa: BLE001 - tokenizer without that helper
+            return
+        if token_id and token_id not in self._tokenizer.eos_token_ids:
+            self._tokenizer.eos_token_ids.add(token_id)
+            logger.info(f"Added <end_of_turn> (id {token_id}) to the stop tokens")
+
+    def unload(self):
+        with self._load_lock:
+            self._model = None
+            self._tokenizer = None
+
+    # -- prompting --------------------------------------------------------
+    def render_prompt(self, messages: list) -> str:
+        """Apply this model's own chat template to the messages."""
+        _, tokenizer = self.load()
+        return tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+
+    def build_messages(self, chunk: str) -> list:
+        """Shape the request for this model's expected format."""
+        if get_profile(self.model_name)["prompt_style"] == "translategemma":
+            # Only the language tags; the template injects the translator
+            # instruction itself, so nothing may be appended to the text.
+            return [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "source_lang_code": _lang_code(SOURCE_LANGUAGE),
+                    "target_lang_code": _lang_code(TARGET_LANGUAGE),
+                    "text": chunk,
+                }],
+            }]
+        return [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT.format(
+                    source=SOURCE_LANGUAGE,
+                    source_native="tiếng Việt" if SOURCE_LANGUAGE == "Vietnamese" else SOURCE_LANGUAGE,
+                    target=TARGET_LANGUAGE,
+                ),
+            },
+            {"role": "user", "content": chunk},
+        ]
+
+    # -- generation -------------------------------------------------------
+    def count_tokens(self, text: str) -> int:
+        _, tokenizer = self.load()
+        return len(tokenizer.encode(text))
+
+    def run(self, chunk: str, max_tokens: int):
+        """Translate one chunk and return the text plus its token count."""
+        from mlx_lm import generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
+
+        model, tokenizer = self.load()
+        prompt = self.render_prompt(self.build_messages(chunk))
+        raw = mlx_generate(
+            model, tokenizer, prompt=prompt,
+            max_tokens=max_tokens,
+            sampler=make_sampler(temp=0.0),  # greedy: translation must be stable
+            verbose=False,
+        )
+        text = _trim_stop_tokens(raw)
+        return text, self.count_tokens(text)
+
+
+def _trim_stop_tokens(output: str) -> str:
+    """Cut the completion at the first end-of-turn marker."""
+    for marker in ("<end_of_turn>", "<eos>", "<end_of_text>"):
+        idx = output.find(marker)
+        if idx != -1:
+            output = output[:idx]
+            break
+    return output.strip()
+
+
+def get_engine(model_name: str) -> "LocalEngine":
+    """Get (and cache) the engine for a model."""
+    with _ENGINE_LOCK:
+        engine = _ENGINES.get(model_name)
+        if engine is None:
+            engine = LocalEngine(model_name)
+            _ENGINES[model_name] = engine
+        return engine
+
+
+def _translate_chunks(chunks: List[str], engine: "LocalEngine",
+                      on_progress: Optional[Callable[[Progress], None]],
+                      progress: Progress) -> List[str]:
+    """Translate every chunk with one model, reporting progress as it goes."""
+    translated: List[str] = []
+    for i, chunk in enumerate(chunks):
+        chunk_started = time.time()
+        text, tokens = engine.run(chunk, max_tokens=max(512, min(8192, len(chunk) * 3)))
+        chunk_seconds = max(time.time() - chunk_started, 1e-6)
+
+        translated.append(text)
+        progress.done_batches = i + 1
+        progress.words_translated += count_words(chunk)
+        progress.tokens_out += tokens
+        progress.elapsed = time.time() - progress.started_at
+        # Rolling average throughput across the whole run.
+        progress.tokens_per_second = progress.tokens_out / max(progress.elapsed, 1e-6)
+        progress.events.append(f"batch {i + 1}/{len(chunks)}: {chunk_seconds:.1f}s")
+
+        if on_progress:
+            on_progress(progress)
+
+    return translated
+
+
+def translate_text(
+    text: str,
+    model: Optional[str] = None,
+    on_progress: Optional[Callable[[Progress], None]] = None,
+    use_cache: bool = True,
+) -> TranslationResult:
+    """
+    Translate text from the configured source language to the target language.
+
+    Args:
+        text: Input text (usually Vietnamese).
+        model: Optional model override. Defaults to the configured model.
+        on_progress: Called with a Progress snapshot as batches complete.
+        use_cache: Return a stored translation when the input is unchanged.
+
+    Returns:
+        TranslationResult with the translated text plus timing/counter stats.
+
+    Raises:
+        RuntimeError: if no model in the chain (configured model plus
+            fallback_models) succeeds.
+    """
+    started = time.time()
+    source = text.strip()
+    if not source:
+        return TranslationResult(text="")
+
+    resolved_model = model or MODEL_NAME
+    if not isinstance(resolved_model, str):
+        # Almost always a positional-argument mix-up at the call site: the
+        # signature is (text, model, on_progress), so passing a callback second
+        # lands here. Fail loudly rather than silently "falling back".
+        raise TypeError(
+            f"model must be a string model id, got {type(resolved_model).__name__}. "
+            "Call as translate_text(text, on_progress=fn)."
+        )
+    if on_progress is not None and not callable(on_progress):
+        raise TypeError("on_progress must be callable; use on_progress=fn.")
+
+    # Already translated this exact input? Skip the model entirely.
+    if use_cache:
+        hit = cache_get(source)
+        if hit is not None:
+            logger.info("Cache hit, skipping translation")
+            return TranslationResult(
+                text=hit, cached=True,
+                words_in=count_words(source), words_out=count_words(hit),
+                elapsed=time.time() - started,
+            )
+
+    primary = resolved_model
+    chain = [primary] + [m for m in CONFIG.get("fallback_models", []) if m != primary]
+
+    last_error: Optional[Exception] = None
+    for attempt, current in enumerate(chain):
+        profile = get_profile(current)
+        chunks = _split_batches(source, profile["batch_size"], profile["batch_char_limit"])
+
+        progress = Progress(
+            total_batches=len(chunks),
+            words_total=count_words(source),
+            started_at=started,
+        )
+        if on_progress:
+            on_progress(progress)
+
+        try:
+            logger.info(
+                f"Translating with {current} (style={profile['prompt_style']}, "
+                f"{len(chunks)} batch(es), limit={profile['batch_char_limit']} chars)"
+            )
+            engine = get_engine(current)
+            translated = _translate_chunks(chunks, engine, on_progress, progress)
+        except Exception as e:  # noqa: BLE001 - try the fallback model, then report
+            last_error = e
+            logger.warning(f"Translation with {current} failed: {type(e).__name__}: {e}")
+            if attempt == len(chain) - 1:
+                break
+            logger.info(f"Falling back to {chain[attempt + 1]}")
+            continue
+
+        out = (
+            translated[0]
+            if len(translated) == 1
+            else "".join(p if p.endswith("\n") else p + "\n" for p in translated)
+        )
+        if use_cache:
+            cache_put(source, out)
+
+        return TranslationResult(
+            text=out,
+            model=current,
+            fell_back=(current != primary),
+            words_in=count_words(source),
+            words_out=count_words(out),
+            tokens_out=progress.tokens_out,
+            tokens_per_second=progress.tokens_out / max(time.time() - started, 1e-6),
+            elapsed=time.time() - started,
+            batches=len(chunks),
+        )
+
+    raise RuntimeError(f"All candidate models failed. Last error: {last_error}")
+
+
+def translate_file(
+    file_path: str,
+    model: Optional[str] = None,
+    on_progress: Optional[Callable[[Progress], None]] = None,
+) -> TranslationResult:
+    """Extract text from a file and translate it."""
+    text = extract_text_from_file(file_path)
+    logger.info(f"Extracted {len(text)} chars from {file_path}")
+    return translate_text(text, model=model, on_progress=on_progress)
+
+
+def translate_files(
+    file_paths: List[str],
+    model: Optional[str] = None,
+    on_progress: Optional[Callable[[Progress], None]] = None,
+) -> Dict[str, Any]:
+    """Translate several files; one failure does not abort the rest."""
+    results = []
+    for path in file_paths:
+        try:
+            results.append({
+                "file": path, "ok": True,
+                "result": translate_file(path, model=model, on_progress=on_progress),
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to translate {path}: {e}")
+            results.append({"file": path, "ok": False, "error": str(e)})
+    return {"results": results}
+
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
+def health_check() -> Dict[str, Any]:
+    """
+    Check whether the configured model is already loaded in-process, and
+    report the fallback chain so the UI can show what is active.
+    """
+    chain = [MODEL_NAME] + [m for m in CONFIG.get("fallback_models", []) if m != MODEL_NAME]
+    engine = _ENGINES.get(MODEL_NAME)
+    info: Dict[str, Any] = {
+        "ready": bool(engine and engine.loaded),
+        "model": MODEL_NAME,
+        "chain": chain,
+    }
+    if not info["ready"]:
+        info["reason"] = "model not loaded yet (loads on first translation)"
+    return info
+
+
+# Alias used by the UI.
+is_server_ready = health_check
+
+
+# ---------------------------------------------------------------------------
+# Google Translate reference (debug / verification only)
+# ---------------------------------------------------------------------------
+
+def _google_translate_chunk(chunk: str, source: str, target: str) -> str:
+    response = httpx.get(
+        "https://translate.googleapis.com/translate_a/t",
+        params={"client": "gtx", "sl": source, "tl": target, "q": chunk},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if isinstance(data, list) and data and isinstance(data[0], str):
+        return data[0]
+    if isinstance(data, dict) and "sentences" in data:
+        return "".join(s.get("trans", "") for s in data["sentences"])
+    return str(data)
+
+
+def google_reference_translation(text: str, retries: int = 3) -> str:
+    """
+    Translate text with Google Translate as an independent reference to
+    compare against the local model's output. Debug/verification only.
+    """
+    if not text.strip():
+        return ""
+
+    source = "vi" if SOURCE_LANGUAGE == "Vietnamese" else "auto"
+    target = {"English": "en"}.get(TARGET_LANGUAGE, TARGET_LANGUAGE.lower()[:2])
+
+    chunks = _split_batches(text, 20)
+    parts = []
+    delay = 2.0
+    for chunk in chunks:
+        for attempt in range(retries):
+            try:
+                parts.append(_google_translate_chunk(chunk, source, target))
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt == retries - 1:
+                    raise
+                logger.warning(
+                    f"Google reference attempt {attempt + 1}/{retries} failed "
+                    f"({type(e).__name__}); retrying in {delay:.0f}s"
+                )
+                time.sleep(delay)
+                delay *= 2
+    return "\n".join(p for p in parts if p)
+
+
+if __name__ == "__main__":
+    status = health_check()
+    print(json.dumps({
+        "server": status,
+        "cache": cache_stats(),
+        "config": {
+            "model": MODEL_NAME,
+            "port": PORT,
+            "source": SOURCE_LANGUAGE,
+            "target": TARGET_LANGUAGE,
+        },
+    }, indent=2, ensure_ascii=False))

@@ -1,0 +1,9 @@
+{
+  "model": "mlx-community/translategemma-4b-it-4bit",
+  "source_language": "Vietnamese",
+  "target_language": "English",
+  "fallback_models": [
+    "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+  ],
+  "notes": "translategemma serves its own chat template in-process; Qwen3 is the fallback. mlx-lm cannot load T5 (VTSNLP/trans_model_vi_en) and plamo-2-translate is en<->ja only."
+}
