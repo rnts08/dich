@@ -16,12 +16,35 @@ is no separate server process to start.
 | Path | Purpose |
 |---|---|
 | `ui.py` | Tkinter app: Translate / Speech / Settings tabs |
-| `backend.py` | text extraction, prompt strategies, cache, engine, metrics |
-| `speech_engine.py` | mic capture + Whisper Vietnamese → completed sentences |
+| `backend.py` | text extraction, prompt strategies, cache, engine, contextual translation |
+| `speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
 | `config.json` | model, languages, `fallback_models`, `load_model_on_startup` |
 | `VERSION` | single source of truth for the version |
 | `dev/bump_version.py` | bumps patch/minor, commits, and tags |
-| `test_data/` | sample Vietnamese documents in every supported format (gitignored) |
+| `test_data/` | sample documents and a Vietnamese speech recording (gitignored) |
+
+## Speech tab
+
+Two ways in:
+
+- **Record** — listens to the microphone, transcribes Vietnamese, and translates
+  as it goes.
+- **Open Audio…** — transcribes an audio file (`mp3`, `wav`, `m4a`, …). This uses
+  `large-v3-turbo`, which is far more accurate in Vietnamese than the live model
+  but runs at about 3.6× realtime, so a 38-minute recording takes roughly 14
+  minutes. The live mic uses `small` (~16× realtime) so it can keep up.
+
+The translation is **not** fixed on first pass. Each utterance is translated with
+the preceding ones supplied as conversation turns, so honorifics and pronouns
+resolve from the first line. Every six utterances the whole block is re-translated
+as one passage and replaces the provisional line-by-line output — so as more
+speech is understood, earlier translations get better. `Refine` forces this
+immediately. The status bar shows `N refined · M provisional`.
+
+Measured on a 150s Vietnamese sample (22 utterances): the first pass produced
+613 characters of fragment-by-fragment English; after the first block refinement
+it became 499 characters of coherent prose. The output gets *better*, not just
+longer.
 
 ## Versioning and commits
 

@@ -16,27 +16,34 @@ change until it is done.
 ### Speech capture
 - [x] Mic capture module (`speech_engine.py`), 16 kHz mono, buffered windows
 - [x] `faster-whisper` Vietnamese transcription, wired to the UI
-- [ ] **End-to-end validation with real Vietnamese speech** — mic → transcript →
-      translation, verified on-device
-- [ ] Microphone permission / device selection in Settings (currently uses the
+- [x] Batch/file transcription with `large-v3-turbo` (accurate but ~3.6x
+      realtime); live mic uses `small` (~16x realtime) to keep up
+- [x] Audio decoded in-process, because faster-whisper's `decode_audio()`
+      passes `av.open(metadata_errors=...)`, which PyAV 19 rejects
+- [x] **Validated end-to-end on real Vietnamese speech** — 150s sample from
+      `UniDataPro/vietnamese-speech-recognition`, 22 utterances, transcript and
+      translation both verified
+- [ ] Microphone permission / device selection in Settings (currently the
       default input device)
 - [ ] Graceful handling when no microphone is present
 
 ### Sentence handling
 - [x] Sentences emitted only on a final trigger (silence, end punctuation, or a
       long window), so translation sees whole units rather than fragments
+- [x] Context-accumulating translation: each utterance is translated with the
+      previous ones supplied as conversation turns, then every `refine_every`
+      utterances the block is re-translated as one passage
+- [x] `Refine` button to force re-translation of everything so far
 - [ ] Tune the silence threshold and minimum-sentence length against real speech
-      — tune the parameters against actual speakers
 - [ ] Push-to-talk as an alternative to always-on listening
-- [ ] Live partial transcript so the user sees text while they speak, not just
-      after the sentence closes
+- [ ] Live partial transcript so the user sees text while they speak
 
 ### Translation integration
 - [ ] Combine consecutive short utterances into one request where possible, to
       reduce per-sentence overhead
-- [ ] Streaming the translated text in token by token (the engine already
+- [ ] Stream the translated text in token by token (the engine already
       supports it; the UI does not yet)
-- [ ] Conversation history so pronouns resolve across sentences
+- [ ] Refinement that preserves paragraph structure (the model reflows lines)
 
 ---
 
