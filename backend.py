@@ -39,6 +39,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "target_language": "English",
     "load_model_on_startup": True,
     "fallback_models": ["mlx-community/Qwen3-4B-Instruct-2507-4bit"],
+    # --- microphone ---
+    "mic_device_index": None,       # null = the system default microphone
+    "mic_model": "small",            # fast enough to keep up with a speaker
+    "refine_every": 6,               # utterances between block re-translations
 }
 
 

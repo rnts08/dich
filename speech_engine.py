@@ -204,10 +204,80 @@ def _prompt_hint() -> str:
 _engine: Optional[SpeechEngine] = None
 
 
-def start_mic_stream(model_size: str = DEFAULT_MODEL) -> SpeechEngine:
+def list_input_devices() -> List[tuple]:
+    """
+    Enumerate microphones as (device_index, display_name) pairs.
+
+    The index is what PortAudio/sounddevice needs; the name is what the UI
+    shows. Returns [] when no input device exists, so the caller can say so
+    rather than crashing on an empty list.
+    """
+    try:
+        import sounddevice as sd
+    except ImportError:
+        return []
+
+    try:
+        devices = sd.query_devices()
+    except Exception as e:  # noqa: BLE001 - audio subsystem can be unavailable
+        logger.warning(f"Could not query audio devices: {type(e).__name__}: {e}")
+        return []
+
+    result: List[tuple] = []
+    for index, info in enumerate(devices):
+        if info.get("max_input_channels", 0) > 0:
+            name = info.get("name", f"device {index}")
+            rate = info.get("default_samplerate", 0)
+            result.append((index, f"{name} ({rate:.0f} Hz)"))
+    return result
+
+
+def default_input_device() -> Optional[int]:
+    """Index of the system default microphone, or None if there isn't one."""
+    try:
+        import sounddevice as sd
+        info = sd.query_devices(kind="input")
+        return int(info["index"])
+    except Exception:  # noqa: BLE001 - no audio subsystem or no device
+        return None
+
+
+def _validate_device(device_index: Optional[int]) -> Optional[int]:
+    """
+    Fall back to the system default when the configured index is stale.
+
+    Happens after a mic is unplugged or device order changes, which would
+    otherwise fail at stream start with a PortAudio error the user cannot act on.
+    """
+    if device_index is None:
+        return None
+    valid = [index for index, _name in list_input_devices()]
+    if device_index in valid:
+        return device_index
+    logger.warning(
+        f"Configured mic {device_index} is no longer present; "
+        f"using the system default instead"
+    )
+    return None
+
+
+def start_mic_stream(
+    model_size: str = DEFAULT_MODEL,
+    device_index: Optional[int] = None,
+) -> SpeechEngine:
+    """
+    Open the microphone and begin transcribing.
+
+    Args:
+        model_size: Whisper model. Use LIVE_MODEL to keep up with a speaker.
+        device_index: Microphone to open; None uses the system default.
+    """
     global _engine
     if _engine is None:
-        _engine = SpeechEngine(model_size=model_size)
+        _engine = SpeechEngine(
+            model_size=model_size,
+            device_index=_validate_device(device_index),
+        )
         _engine.start()
     return _engine
 

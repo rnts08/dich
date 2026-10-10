@@ -33,6 +33,11 @@ from backend import (
     translate_text,
 )
 
+try:  # speech is optional; the UI explains what to install if it is missing
+    import speech_engine
+except ImportError:  # pragma: no cover
+    speech_engine = None
+
 APP_NAME = "Dịch"
 APP_NAME = "Dịch"
 APP_TAGLINE = "Vietnamese → English translator"
@@ -235,6 +240,7 @@ class DichApp:
         self.recording = False
         self.translator = None
         self.audio_path: Path | None = None
+        self._mic_opening = False
 
         self._build_style()
         self._build_widgets()
@@ -413,7 +419,6 @@ class DichApp:
         ttk.Label(form, text="Startup", style="Header.TLabel").grid(
             row=7, column=0, sticky="w", pady=(24, 10)
         )
-
         self.preload_var = tk.BooleanVar(
             value=bool(backend.CONFIG.get("load_model_on_startup", True))
         )
@@ -432,42 +437,130 @@ class DichApp:
             style="Tagline.TLabel",
         ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
-        # --- cache ----------------------------------------------------------
-        ttk.Label(form, text="Translation cache", style="Header.TLabel").grid(
+        # --- microphone -----------------------------------------------------
+        ttk.Label(form, text="Microphone", style="Header.TLabel").grid(
             row=11, column=0, sticky="w", pady=(24, 10)
         )
 
-        self.cache_status = ttk.Label(form, text=self._cache_summary(), style="Tagline.TLabel")
-        self.cache_status.grid(row=12, column=0, columnspan=2, sticky="w", pady=4)
+        self.device_names: List[str] = []
+        self.device_ids: List[Optional[int]] = []
+        # Bind the variable before populating, so the dropdown shows the
+        # configured device rather than starting blank.
+        self.device_var = tk.StringVar()
+        self._refresh_devices()
 
-        ttk.Button(form, text="Clear cache", command=self.clear_cache).grid(row=13, column=0, pady=4)
+        ttk.Label(form, text="Input device").grid(row=12, column=0, sticky="w", pady=6)
+        self.device_combo = ttk.Combobox(
+            form, textvariable=self.device_var, width=54, state="readonly"
+        )
+        self.device_combo.grid(row=12, column=1, sticky="w", pady=6)
+        ttk.Button(
+            form, text="Rescan", command=self._refresh_devices
+        ).grid(row=12, column=2, padx=8)
+
+        ttk.Label(form, text="Speech model").grid(row=13, column=0, sticky="w", pady=6)
+        self.mic_model_var = tk.StringVar(
+            value=str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL))
+        )
+        ttk.Combobox(
+            form, textvariable=self.mic_model_var, width=54,
+            values=["tiny", "base", "small", "medium", "large-v3-turbo"],
+        ).grid(row=13, column=1, sticky="w", pady=6)
+
+        ttk.Label(
+            form,
+            text="The speech model only runs while recording. Larger models read "
+                 "Vietnamese better but fall behind a live speaker: small is "
+                 "about 16x realtime, large-v3-turbo about 3.6x.",
+            style="Tagline.TLabel",
+        ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        ttk.Label(form, text="Refine every (utterances)").grid(
+            row=15, column=0, sticky="w", pady=6
+        )
+        self.refine_var = tk.IntVar(
+            value=int(backend.CONFIG.get("refine_every", 6))
+        )
+        ttk.Spinbox(
+            form, from_=2, to=40, textvariable=self.refine_var, width=6,
+            command=self._on_refine_every_changed,
+        ).grid(row=15, column=1, sticky="w", pady=6)
+
+        ttk.Label(
+            form,
+            text="How many utterances to collect before the whole block is "
+                 "re-translated as one passage. Lower means earlier correction at "
+                 "the cost of more model calls.",
+            style="Tagline.TLabel",
+        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        # --- cache ----------------------------------------------------------
+        ttk.Label(form, text="Translation cache", style="Header.TLabel").grid(
+            row=18, column=0, sticky="w", pady=(24, 10)
+        )
+
+        self.cache_status = ttk.Label(form, text=self._cache_summary(), style="Tagline.TLabel")
+        self.cache_status.grid(row=19, column=0, columnspan=2, sticky="w", pady=4)
+
+        ttk.Button(
+            form, text="Clear cache", command=self.clear_cache
+        ).grid(row=19, column=2, padx=8)
 
         # --- debug: google reference ---------------------------------------
         ttk.Label(form, text="Debug", style="Header.TLabel").grid(
-            row=15, column=0, sticky="w", pady=(24, 10)
+            row=20, column=0, sticky="w", pady=(24, 10)
         )
 
         ttk.Label(
             form,
             text="Google Translate reference for verifying output.",
             style="Tagline.TLabel",
-        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ).grid(row=21, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         ttk.Button(
             form, text="Run Google reference", command=self.run_reference
-        ).grid(row=17, column=0, pady=4)
+        ).grid(row=22, column=0, pady=4)
 
         self.reference_pane = TextPane(
             form, "Google Translate reference", editable=False, placeholder="Reference appears here"
         )
-        self.reference_pane.grid(row=18, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
-        form.rowconfigure(18, weight=1)
+        self.reference_pane.grid(row=23, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        form.rowconfigure(23, weight=1)
         form.columnconfigure(1, weight=1)
 
     # -- helpers ----------------------------------------------------------
     def _cache_summary(self) -> str:
         stats = cache_stats()
         return f"{stats['entries']} saved translation(s) in {stats['dir']}"
+
+    def _refresh_devices(self):
+        """Rebuild the microphone dropdown from what is actually present."""
+        # Keep an unsaved choice: rescanning should update the option list, not
+        # silently reset the selection the user just made.
+        previous = self._selected_device() if hasattr(self, "device_var") else None
+
+        if speech_engine is None:
+            self.device_names, self.device_ids = ["(speech deps not installed)"], [None]
+        else:
+            devices = speech_engine.list_input_devices()
+            self.device_ids = [None] + [index for index, _name in devices]
+            self.device_names = ["System default"] + [name for _index, name in devices]
+
+        if hasattr(self, "device_var"):
+            self.device_var.set(self._device_label(previous))
+        if hasattr(self, "device_combo"):
+            self.device_combo.configure(values=self.device_names)
+
+    def _device_label(self, index: Optional[int] = None) -> str:
+        """Label for a device index, falling back to what config names."""
+        if index is None:
+            index = backend.CONFIG.get("mic_device_index")
+        if index is None:
+            return "System default"
+        for device_index, name in zip(self.device_ids, self.device_names):
+            if device_index == index:
+                return name
+        return f"Device {index} (not present)"
 
     def _on_preload_toggled(self):
         """Turning the option on should load the model now, not just persist it."""
@@ -478,6 +571,14 @@ class DichApp:
             self.status.set_hint("started loading — status turns green when ready")
             # Nudge the poll so the state is picked up promptly.
             self.root.after(400, self._check_server)
+
+    def _on_refine_every_changed(self):
+        """Apply the new block size to the translator in use, if there is one."""
+        if self.translator is not None:
+            try:
+                self.translator.refine_every = max(1, int(self.refine_var.get()))
+            except (TypeError, ValueError):
+                pass
 
     # -- server status ----------------------------------------------------
     def _check_server(self):
@@ -718,29 +819,70 @@ class DichApp:
             self.status.set_stats("refine failed", RED)
 
     def _new_translator(self):
-        self.translator = backend.ContextualTranslator()
+        self.translator = backend.ContextualTranslator(
+            refine_every=int(backend.CONFIG.get("refine_every", 6))
+        )
 
     def start_recording(self):
-        try:
-            import speech_engine
-        except ImportError:
+        if self._mic_opening or self.recording:
+            return
+        if speech_engine is None:
             messagebox.showerror(
                 "Speech dependencies missing",
                 "Install with:\n\npip install sounddevice faster-whisper av",
             )
             return
-        try:
-            speech_engine.start_mic_stream()
-        except Exception as exc:  # noqa: BLE001
-            self._show_error("Could not start the microphone", exc, traceback.format_exc())
+        if not speech_engine.list_input_devices():
+            messagebox.showerror(
+                "No microphone",
+                "No input device was found. Connect a microphone and try again.",
+            )
             return
 
+        # Opening the stream blocks until the OS decides whether to grant
+        # microphone access, which can be indefinitely long if nothing can show
+        # the permission prompt. It therefore runs off the UI thread: a stuck
+        # open would otherwise freeze the whole window.
+        self._mic_opening = True
+        self.mic_button.configure(state="disabled")
+        self.mic_status.configure(text="opening…")
+        self.status.set_stats("opening microphone…")
+        self.root.config(cursor="watch")
+
+        self.worker.run(
+            speech_engine.start_mic_stream,
+            model_size=str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL)),
+            device_index=backend.CONFIG.get("mic_device_index"),
+            on_success=self._on_mic_started,
+            on_error=self._on_mic_failed,
+        )
+
+    def _on_mic_started(self, engine):
+        self.root.config(cursor="")
+        self._mic_opening = False
+        self.mic_button.configure(state="normal")
         self.recording = True
         self.mic_button.configure(text="■  Stop")
         self.mic_status.configure(text="listening…", foreground=GREEN)
         self.status.set_stats("listening…", GREEN)
         self._new_translator()
         threading.Thread(target=self._render_speech, daemon=True).start()
+
+    def _on_mic_failed(self, exc: Exception, tb: str):
+        self.root.config(cursor="")
+        self._mic_opening = False
+        self.mic_button.configure(state="normal")
+        self.mic_status.configure(text="failed to open")
+        self.status.set_stats("microphone unavailable", RED)
+        hint = (
+            "macOS needs microphone permission for the app running this. "
+            "Check System Settings → Privacy & Security → Microphone."
+        )
+        messagebox.showerror(
+            "Could not start the microphone",
+            f"{exc}\n\n{hint}",
+        )
+        print(tb)
 
     def stop_recording(self):
         if not self.recording:
@@ -796,6 +938,14 @@ class DichApp:
         print(tb)
 
     # -- settings ---------------------------------------------------------
+    def _selected_device(self) -> Optional[int]:
+        """Map the chosen dropdown label back to a PortAudio device index."""
+        label = self.device_var.get()
+        for index, name in zip(self.device_ids, self.device_names):
+            if name == label:
+                return index
+        return None
+
     def save_settings(self):
         data = {}
         if CONFIG_PATH.exists():
@@ -810,6 +960,9 @@ class DichApp:
             "source_language": self.source_var.get().strip(),
             "target_language": self.target_var.get().strip(),
             "load_model_on_startup": bool(self.preload_var.get()),
+            "mic_device_index": self._selected_device(),
+            "mic_model": self.mic_model_var.get().strip(),
+            "refine_every": int(self.refine_var.get()),
         })
 
         try:
