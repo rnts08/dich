@@ -511,11 +511,20 @@ class LocalEngine:
 
     def run(self, chunk: str, max_tokens: int):
         """Translate one chunk and return the text plus its token count."""
+        return self.run_messages(self.build_messages(chunk), max_tokens)
+
+    def run_messages(self, messages: list, max_tokens: int):
+        """
+        Translate a prepared message list and return (text, token count).
+
+        Accepting pre-built messages lets a caller supply prior conversation
+        turns as context instead of a single isolated paragraph.
+        """
         from mlx_lm import generate as mlx_generate
         from mlx_lm.sample_utils import make_sampler
 
         model, tokenizer = self.load()
-        prompt = self.render_prompt(self.build_messages(chunk))
+        prompt = self.render_prompt(messages)
         raw = mlx_generate(
             model, tokenizer, prompt=prompt,
             max_tokens=max_tokens,
@@ -524,6 +533,29 @@ class LocalEngine:
         )
         text = _trim_stop_tokens(raw)
         return text, self.count_tokens(text)
+
+    def run_block(self, text: str, model: Optional[str] = None):
+        """
+        Translate a whole passage as one unit, returning a TranslationResult.
+
+        Kept separate from translate_text() so it is never fed through
+        batching or the cache: a refinement must reflect the current model, not
+        a stored earlier answer.
+        """
+        started = time.time()
+        translation, tokens = self.run_messages(
+            self.build_messages(text), max(512, min(8192, len(text) * 3))
+        )
+        elapsed = time.time() - started
+        return TranslationResult(
+            text=translation,
+            model=model or self.model_name,
+            words_in=count_words(text),
+            words_out=count_words(translation),
+            tokens_out=tokens,
+            tokens_per_second=tokens / max(elapsed, 1e-6),
+            elapsed=elapsed,
+        )
 
 
 def _trim_stop_tokens(output: str) -> str:
@@ -703,6 +735,239 @@ def translate_files(
             logger.error(f"Failed to translate {path}: {e}")
             results.append({"file": path, "ok": False, "error": str(e)})
     return {"results": results}
+
+
+# ---------------------------------------------------------------------------
+# Context-aware speech translation
+# ---------------------------------------------------------------------------
+# Whisper segments on acoustic boundaries, so a "sentence" often ends mid-clause
+# ("nhau một"). Translating each in isolation produces fragments that read
+# wrong, and Vietnamese honorifics/pronouns only resolve with what came before.
+#
+# Two stages fix this:
+#   1. translate one utterance *with* the preceding (Vietnamese, English) pairs
+#      supplied as prior conversation turns, so context is available from the
+#      first line;
+#   2. every `refine_every` utterances, re-translate the whole accumulated block
+#      as a single passage and replace the provisional line-by-line output.
+# Stage 2 is what makes the result improve as more speech is understood.
+
+CONTEXT_TURNS = 3          # prior utterances supplied as context
+REFINE_EVERY = 6           # utterances between whole-block re-translations
+
+
+def _context_messages(sentence: str, history: List[tuple], style: str) -> list:
+    """
+    Build a multi-turn conversation: prior Vietnamese with its translation, then
+    the new utterance. Both prompt styles accept this shape.
+    """
+    messages: List[dict] = []
+
+    def user_turn(text: str) -> dict:
+        if style == "translategemma":
+            return {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "source_lang_code": _lang_code(SOURCE_LANGUAGE),
+                    "target_lang_code": _lang_code(TARGET_LANGUAGE),
+                    "text": text,
+                }],
+            }
+        return {"role": "user", "content": text}
+
+    for prior_vi, prior_en in history[-CONTEXT_TURNS:]:
+        messages.append(user_turn(prior_vi))
+        messages.append({"role": "assistant", "content": prior_en})
+    messages.append(user_turn(sentence))
+    return messages
+
+
+class ContextualTranslator:
+    """
+    Translates an incoming stream of Vietnamese utterances, refining earlier
+    translations as context accumulates.
+
+    `translation[i]` is the best-known English for `transcript[i]` and may be
+    replaced later by a more coherent block translation, so consumers should
+    read the list rather than cache individual lines.
+    """
+
+    def __init__(self, refine_every: int = REFINE_EVERY, on_refine=None,
+                 on_update=None):
+        self.transcript: List[str] = []
+        self.translation: List[str] = []
+        self.elaborate: List[bool] = []     # True once a line has been refined
+        self.refined_blocks: List[dict] = []  # {start, end, text}
+        self.refine_every = max(1, refine_every)
+        self._on_refine = on_refine
+        self._on_update = on_update
+        self._last_error: Optional[str] = None
+
+    # -- state ------------------------------------------------------------
+    @property
+    def refined_count(self) -> int:
+        return sum(1 for e in self.elaborate if e)
+
+    @property
+    def pending_count(self) -> int:
+        return len(self.transcript) - self.refined_count
+
+    def add(self, sentence: str) -> str:
+        """
+        Add a Vietnamese utterance and return its current translation.
+
+        Every `refine_every` utterances, the block is re-translated wholesale.
+        """
+        sentence = sentence.strip()
+        if not sentence:
+            return ""
+
+        index = len(self.transcript)
+        history = list(zip(self.transcript, self.translation))
+        english = translate_utterance(sentence, history)
+        self.transcript.append(sentence)
+        self.translation.append(english)
+        self.elaborate.append(False)
+
+        self._notify(self._on_update, index, english)
+
+        if (index + 1) % self.refine_every == 0:
+            self.refine()
+        return english
+
+    def refine(self, start: int = 0) -> bool:
+        """
+        Re-translate `transcript[start:]` as one passage and replace those
+        lines with the coherent result.
+
+        The model is free to return a different number of lines than it was
+        given, so the merged text is kept verbatim and the per-line guesses are
+        only overwritten where the mapping is unambiguous. Every index in the
+        block is marked refined, because the block really was re-translated;
+        `blocks` holds the authoritative text for display.
+        """
+        block = self.transcript[start:]
+        if not block:
+            return False
+
+        try:
+            merged = translate_block(block)
+        except Exception as e:  # noqa: BLE001 - keep earlier results usable
+            self._last_error = f"{type(e).__name__}: {e}"
+            logger.warning(f"Block refinement failed: {self._last_error}")
+            return False
+
+        lines = _split_translation(merged, len(block))
+        for i, line in enumerate(lines, start=start):
+            if line and line.strip():
+                self.translation[i] = line.strip()
+
+        # A refinement re-reads from `start` to the end, so any earlier block it
+        # overlaps has been superseded. Keeping both would render the same
+        # sentences twice, once per block.
+        end = len(self.transcript) - 1
+        self.refined_blocks = [
+            b for b in self.refined_blocks
+            if b["end"] < start or b["start"] > end
+        ]
+        self.refined_blocks.append({
+            "start": start,
+            "end": end,
+            "text": merged.strip(),
+        })
+        for i in range(start, len(self.transcript)):
+            self.elaborate[i] = True
+
+        self._notify(self._on_refine, start)
+        return True
+
+    def render_refined(self) -> str:
+        """
+        Best display text: refined passages in place, with any utterances that
+        sit outside a refined block shown individually.
+        """
+        covered = [
+            False for _ in range(len(self.transcript))
+        ]
+        out: List[str] = []
+        for block in self.refined_blocks:
+            for i in range(block["start"], block["end"] + 1):
+                covered[i] = True
+            out.append((block["start"], block["text"]))
+
+        for i, en in enumerate(self.translation):
+            if not covered[i]:
+                out.append((i, en or "(pending)"))
+
+        out.sort(key=lambda pair: pair[0])
+        return "\n".join(text for _index, text in out if text)
+
+    # -- output -----------------------------------------------------------
+    def render(self) -> str:
+        return "\n".join(
+            en if en else "(pending)" for en in self.translation
+        )
+
+    def stats(self) -> dict:
+        return {
+            "utterances": len(self.transcript),
+            "refined": self.refined_count,
+            "provisional": self.pending_count,
+            "refined_blocks": len(self.refined_blocks),
+            "context_turns": CONTEXT_TURNS,
+            "refine_every": self.refine_every,
+            "last_error": self._last_error,
+        }
+
+    @staticmethod
+    def _notify(callback, *args):
+        if callback:
+            try:
+                callback(*args)
+            except Exception as e:  # noqa: BLE001 - a listener must not break flow
+                logger.warning(f"ContextualTranslator callback failed: {e}")
+
+
+def translate_utterance(sentence: str, history: List[tuple],
+                        model: Optional[str] = None) -> str:
+    """
+    Translate a single utterance with the preceding conversation as context.
+
+    Args:
+        sentence: The Vietnamese utterance to translate.
+        history: Prior (vietnamese, english) pairs, most recent last.
+        model: Optional model override.
+    """
+    name = model or MODEL_NAME
+    style = get_profile(name)["prompt_style"]
+    messages = _context_messages(sentence, history, style)
+    engine = get_engine(name)
+    text, _tokens = engine.run_messages(messages, max_tokens=256)
+    return text
+
+
+def translate_block(sentences: List[str], model: Optional[str] = None) -> str:
+    """Translate several sentences as one passage, preserving line structure."""
+    name = model or MODEL_NAME
+    engine = get_engine(name)
+    return engine.run_block("\n".join(sentences), model=name).text
+
+
+def _split_translation(text: str, expected: int) -> List[str]:
+    """
+    Split a block translation back into per-line pieces.
+
+    A block translation should contain one line per input utterance. When the
+    model returns fewer or more lines than expected, the surplus is folded into
+    the last line rather than silently dropping or inventing content.
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(lines) == expected:
+        return lines
+    if len(lines) > expected:
+        return lines[:expected - 1] + [" ".join(lines[expected - 1:])]
+    return lines + [""] * (expected - len(lines))
 
 
 # ---------------------------------------------------------------------------

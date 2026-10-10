@@ -233,6 +233,8 @@ class DichApp:
         self.worker = Worker(root)
         self.current_file: Path | None = None
         self.recording = False
+        self.translator = None
+        self.audio_path: Path | None = None
 
         self._build_style()
         self._build_widgets()
@@ -341,6 +343,8 @@ class DichApp:
 
         self.mic_button = ttk.Button(toolbar, text="●  Record", command=self.toggle_recording)
         self.mic_button.pack(side="left", padx=(0, 8))
+        ttk.Button(toolbar, text="Open Audio…", command=self.open_audio).pack(side="left", padx=(0, 8))
+        ttk.Button(toolbar, text="Refine", command=self.refine_speech).pack(side="left")
         ttk.Button(toolbar, text="Clear", command=self.clear_speech).pack(side="left")
 
         self.mic_status = ttk.Label(toolbar, text="idle", style="Tagline.TLabel")
@@ -348,8 +352,9 @@ class DichApp:
 
         ttk.Label(
             tab,
-            text=f"Speak {SOURCE_LANGUAGE}; the transcript fills in on the left and its "
-                 f"{TARGET_LANGUAGE} translation on the right.",
+            text=f"Speak {SOURCE_LANGUAGE}, or open an audio recording. The transcript "
+                 f"fills in on the left; the {TARGET_LANGUAGE} translation on the right "
+                 f"is re-translated as more speech gives it context.",
             style="Tagline.TLabel",
         ).pack(fill="x", padx=12)
 
@@ -618,13 +623,110 @@ class DichApp:
     def toggle_recording(self):
         self.stop_recording() if self.recording else self.start_recording()
 
+    def open_audio(self):
+        """Transcribe an audio file, then translate it with accumulating context."""
+        try:
+            import speech_engine
+        except ImportError:
+            messagebox.showerror(
+                "Speech dependencies missing",
+                "Install with:\n\npip install sounddevice faster-whisper av",
+            )
+            return
+
+        path = filedialog.askopenfilename(
+            title="Open an audio recording",
+            filetypes=[
+                ("Audio files", "*.mp3 *.wav *.m4a *.ogg *.flac *.aac"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        self.audio_path = Path(path)
+        self.mic_status.configure(text="transcribing…")
+        self.status.set_stats("decoding audio…")
+        self._new_translator()
+        self.transcript_pane.set("")
+        self.speech_translation_pane.set("")
+
+        self.worker.run(
+            speech_engine.transcribe_file, path,
+            speech_engine.FILE_MODEL,
+            on_success=self._on_audio_transcribed,
+            on_error=self._on_speech_error,
+        )
+
+    def _on_audio_transcribed(self, result):
+        self.mic_status.configure(
+            text=f"{len(result.sentences)} sentences, {result.duration:.0f}s"
+        )
+        self.transcript_pane.set("\n".join(result.sentences))
+        self.status.set_stats("translating…")
+        # Feed the sentences in on the UI thread so the panes update live.
+        self.root.after(0, lambda: self._stream_sentences(list(result.sentences)))
+
+    def _stream_sentences(self, sentences):
+        """Translate sentences one at a time, letting context accumulate."""
+        if not sentences:
+            return
+        sentence = sentences.pop(0)
+
+        def done(_ignored=None):
+            self.speech_translation_pane.set(self.translator.render_refined())
+            self.status.set_stats(
+                f"{self.translator.stats()['refined']} refined · "
+                f"{self.translator.stats()['provisional']} provisional"
+            )
+            if sentences:
+                self.root.after(0, lambda: self._stream_sentences(sentences))
+            else:
+                self.status.set_stats(
+                    f"done · {self.translator.stats()['refined']} refined", GREEN
+                )
+
+        def failed(exc, tb):
+            self.speech_translation_pane.append(f"[failed: {exc}]\n")
+            print(tb)
+            if sentences:
+                self.root.after(0, lambda: self._stream_sentences(sentences))
+
+        self.worker.run(
+            self.translator.add, sentence,
+            on_success=done, on_error=failed,
+        )
+
+    def refine_speech(self):
+        """Force a whole-passage re-translation of everything so far."""
+        if self.translator is None or not self.translator.transcript:
+            messagebox.showinfo("Nothing to refine", "Record or open some audio first.")
+            return
+        self.status.set_stats("refining…")
+        self.worker.run(
+            self.translator.refine,
+            on_success=lambda ok: self._on_refined(ok),
+            on_error=self._on_speech_error,
+        )
+
+    def _on_refined(self, ok):
+        if ok:
+            self.speech_translation_pane.set(self.translator.render_refined())
+            stats = self.translator.stats()
+            self.status.set_stats(f"{stats['refined']} refined of {stats['utterances']}", GREEN)
+        else:
+            self.status.set_stats("refine failed", RED)
+
+    def _new_translator(self):
+        self.translator = backend.ContextualTranslator()
+
     def start_recording(self):
         try:
             import speech_engine
         except ImportError:
             messagebox.showerror(
                 "Speech dependencies missing",
-                "Install them with:\n\npip install sounddevice faster-whisper",
+                "Install with:\n\npip install sounddevice faster-whisper av",
             )
             return
         try:
@@ -637,6 +739,7 @@ class DichApp:
         self.mic_button.configure(text="■  Stop")
         self.mic_status.configure(text="listening…", foreground=GREEN)
         self.status.set_stats("listening…", GREEN)
+        self._new_translator()
         threading.Thread(target=self._render_speech, daemon=True).start()
 
     def stop_recording(self):
@@ -658,8 +761,9 @@ class DichApp:
 
     def _render_speech(self):
         """
-        Pull completed sentences from the speech engine, show them, and
-        translate each one as a whole unit.
+        Pull completed utterances from the speech engine and feed them to the
+        contextual translator, so later sentences are translated with the
+        earlier ones as context.
         """
         import time
         try:
@@ -667,24 +771,25 @@ class DichApp:
         except ImportError:
             return
 
-        seen = set()
         while self.recording:
             for sentence in speech_engine.drain_final_sentences():
                 key = sentence.strip()
-                if not key or key in seen:
+                if not key:
                     continue
-                seen.add(key)
                 self.root.after(0, lambda s=key: self.transcript_pane.append(s + "\n\n"))
                 self.worker.run(
-                    translate_text,
-                    key,
-                    on_success=self._on_speech_translated,
+                    self.translator.add, key,
+                    on_success=self._on_speech_utterance,
                     on_error=self._on_speech_error,
                 )
             time.sleep(0.3)
 
-    def _on_speech_translated(self, result: TranslationResult):
-        self.speech_translation_pane.append(result.text.strip() + "\n\n")
+    def _on_speech_utterance(self, _result=None):
+        stats = self.translator.stats()
+        self.speech_translation_pane.set(self.translator.render_refined())
+        self.status.set_stats(
+            f"{stats['refined']} refined · {stats['provisional']} provisional"
+        )
 
     def _on_speech_error(self, exc: Exception, tb: str):
         self.speech_translation_pane.append(f"[translation failed: {exc}]\n\n")

@@ -2,32 +2,45 @@
 Speech-to-text engine for the speech tab.
 
 Pipeline:
-    microphone -> whisper (Vietnamese) -> completed sentences
+    audio (microphone or file) -> whisper (Vietnamese) -> completed sentences
 
 Design notes:
-    * faster-whisper (CTranslate2) transcribes fixed-size audio windows, but raw
-      windows cut mid-sentence and are unreliable for meaning-level translation.
+    * faster-whisper transcribes fixed-size audio windows, but raw windows cut
+      mid-sentence and are unreliable for meaning-level translation.
       We instead only emit sentences on a *final* trigger: silence, an end
       punctuation mark, or the window ending. Sentences are then translated as
       whole units, which is what the requirement asks for.
-    * If the optional deps are missing, importing this module raises ImportError
-      and the UI tells the user what to install.
+    * Audio is always decoded in-process into a float32 array. Handing a path to
+      faster-whisper breaks on this stack: its decode_audio() calls
+      av.open(metadata_errors=...), which the installed PyAV does not accept.
+    * Two model presets, because quality and speed trade off hard in Vietnamese:
+      large-v3-turbo is far more accurate but ~3.6x realtime, small is ~16x
+      realtime with noticeably worse proper nouns.
 
-Requires: pip install sounddevice faster-whisper numpy
+Requires: pip install sounddevice faster-whisper numpy av
 """
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
 from collections import deque
-from typing import Iterator, Optional
+from pathlib import Path
+from typing import Iterator, List, Optional
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 WINDOW_SECONDS = 3.0          # audio sent to the transcriber at a time
 SILENCE_SECONDS = 0.8         # trailing silence that ends an utterance
 MIN_SENTENCE_CHARS = 8        # drop tiny fragments ("uh", "vâng" alone)
-MODEL_SIZE = "small"          # good Vietnamese accuracy; use "base"/"medium" to trade
+# Batch/file transcription favours accuracy; live mic favours keeping up.
+FILE_MODEL = "large-v3-turbo"
+LIVE_MODEL = "small"
+DEFAULT_MODEL = LIVE_MODEL
 
 _END_PUNCT = ".?!。！？…"
 # vietnamese final particles / connectors that usually close a sentence
@@ -40,7 +53,7 @@ _END_WORDS = {
 class SpeechEngine:
     """Records from the default microphone and yields completed Vietnamese sentences."""
 
-    def __init__(self, model_size: str = MODEL_SIZE, device_index: Optional[int] = None):
+    def __init__(self, model_size: str = DEFAULT_MODEL, device_index: Optional[int] = None):
         self.model_size = model_size
         self.device_index = device_index
         self._buffer: "deque[float]" = deque()
@@ -53,12 +66,9 @@ class SpeechEngine:
 
     # -- lifecycle --------------------------------------------------------
     def start(self):
-        import numpy as np  # noqa: F401 - presence check
         import sounddevice as sd
 
-        from faster_whisper import WhisperModel
-
-        self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+        self._model = _whisper_model(self.model_size)
 
         def on_audio(indata, frames, time_info, status):  # noqa: ARG001
             with self._buffer_lock:
@@ -194,7 +204,7 @@ def _prompt_hint() -> str:
 _engine: Optional[SpeechEngine] = None
 
 
-def start_mic_stream(model_size: str = MODEL_SIZE) -> SpeechEngine:
+def start_mic_stream(model_size: str = DEFAULT_MODEL) -> SpeechEngine:
     global _engine
     if _engine is None:
         _engine = SpeechEngine(model_size=model_size)
@@ -207,6 +217,128 @@ def stop_mic_stream():
     if _engine is not None:
         _engine.stop()
         _engine = None
+
+
+# ---------------------------------------------------------------------------
+# Audio file input
+# ---------------------------------------------------------------------------
+
+def _whisper_model(name: str):
+    """Build a WhisperModel, with an install hint instead of a raw ImportError."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as e:
+        raise ImportError(
+            "Speech needs faster-whisper. Install: pip install faster-whisper"
+        ) from e
+    return WhisperModel(name, device="cpu", compute_type="int8")
+
+
+def load_audio(
+    path: str,
+    sample_rate: int = SAMPLE_RATE,
+    start: float = 0.0,
+    duration: Optional[float] = None,
+) -> np.ndarray:
+    """
+    Decode any audio file to a mono float32 array at `sample_rate`.
+
+    Decoded here rather than passed as a path because faster-whisper's
+    decode_audio() calls av.open(metadata_errors=...), which the installed PyAV
+    rejects. Decoding at load time also lets a chunk of a long recording be
+    read without holding the whole thing in memory.
+    """
+    import av
+
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=sample_rate)
+    chunks: List[bytes] = []
+    collected = 0.0
+    position = 0.0
+
+    # PyAV renamed/dropped `metadata_errors` across versions. faster-whisper
+    # passes it unconditionally and explodes on this stack, so the call is made
+    # defensively rather than committing to either form.
+    try:
+        container = av.open(path, metadata_errors="ignore")
+    except TypeError:
+        container = av.open(path)
+
+    with container:
+        for frame in container.decode(container.streams.audio[0]):
+            frame_seconds = float(frame.samples) / max(frame.sample_rate, 1)
+            if position + frame_seconds <= start:
+                position += frame_seconds          # fast-forward past `start`
+                continue
+            for packet in resampler.resample(frame):
+                pcm = packet.to_ndarray().reshape(-1)
+                chunks.append(pcm.tobytes())
+                collected += len(pcm) / sample_rate
+            if duration is not None and collected >= duration:
+                break
+
+    audio = np.frombuffer(b"".join(chunks), dtype=np.int16)
+    return audio.astype(np.float32) / 32768.0
+
+
+class TranscriptionResult:
+    """Sentences transcribed from one audio source."""
+
+    def __init__(self, language: str = "", language_probability: float = 0.0,
+                 model: str = "", duration: float = 0.0):
+        self.language = language
+        self.language_probability = language_probability
+        self.model = model
+        self.duration = duration
+        self.sentences: List[str] = []
+        self.timings: List[tuple] = []
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.sentences)
+
+    def __repr__(self) -> str:
+        return (
+            f"TranscriptionResult(lang={self.language}, "
+            f"sentences={len(self.sentences)}, duration={self.duration}s)"
+        )
+
+
+def transcribe_file(
+    path: str,
+    model_name: str = FILE_MODEL,
+    max_seconds: Optional[float] = None,
+) -> TranscriptionResult:
+    """
+    Transcribe an audio file to Vietnamese.
+
+    Defaults to the accurate-but-slow model: a file is not racing a live
+    speaker, so quality wins. Pass LIVE_MODEL when a long recording has to
+    finish quickly.
+    """
+    audio = load_audio(path, duration=max_seconds)
+    logger.info(
+        f"Decoded {path}: {len(audio) / SAMPLE_RATE:.1f}s at {SAMPLE_RATE} Hz"
+    )
+
+    model = _whisper_model(model_name)
+    segments, info = model.transcribe(
+        audio, language="vi", beam_size=5,
+        vad_filter=True,                 # skip silence instead of noise
+        condition_on_previous_text=True,  # carry context across sentences
+    )
+
+    result = TranscriptionResult(
+        language=info.language,
+        language_probability=round(float(info.language_probability), 3),
+        model=model_name,
+        duration=round(len(audio) / SAMPLE_RATE, 1),
+    )
+    for seg in segments:
+        text = seg.text.strip()
+        if text:
+            result.sentences.append(text)
+            result.timings.append((round(seg.start, 2), round(seg.end, 2)))
+    return result
 
 
 def drain_final_sentences() -> list[str]:
