@@ -58,8 +58,6 @@ def main() -> int:
                         help="show the next version and exit")
     parser.add_argument("--no-commit", action="store_true",
                         help="update VERSION but do not commit or tag")
-    parser.add_argument("--message", "-m", default="",
-                        help="commit message; defaults to the version bump")
     args = parser.parse_args()
 
     version = bump(args.part)
@@ -84,11 +82,14 @@ def main() -> int:
     if args.no_commit:
         return 0
 
-    message = args.message or f"chore: release {new}"
+    # Fold VERSION into the commit that carries the change and tag that commit.
+    # A separate "release" commit would make the tag point at a VERSION-only
+    # diff, so `git diff v0.1.2 v0.1.3` would show nothing but the number.
     git("add", str(VERSION_FILE))
-    git("commit", "-m", message)
-    git("tag", "-a", f"v{new}", "-m", f"Release {new}")
-    print(f"committed and tagged v{new}")
+    git("commit", "--amend", "--no-edit")
+    git("tag", "-a", f"v{new}", "-m",
+        f"Release {new} ({git('log', '-1', '--format=%s')})")
+    print(f"tagged v{new} at {git('rev-parse', '--short', 'HEAD')}")
     return 0
 
 
