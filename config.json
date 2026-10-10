@@ -2,6 +2,7 @@
   "model": "mlx-community/translategemma-4b-it-4bit",
   "source_language": "Vietnamese",
   "target_language": "English",
+  "load_model_on_startup": true,
   "fallback_models": [
     "mlx-community/Qwen3-4B-Instruct-2507-4bit"
   ],

@@ -238,7 +238,12 @@ class DichApp:
         self._build_widgets()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.root.after(300, self._check_server)
+
+        # Load the model immediately on startup if the setting asks for it, so
+        # the status turns green without the user having to translate anything.
+        if backend.CONFIG.get("load_model_on_startup", True):
+            backend.preload_model()
+        self.root.after(200, self._check_server)
 
     # -- style ------------------------------------------------------------
     def _build_style(self):
@@ -399,42 +404,75 @@ class DichApp:
         self.settings_status = ttk.Label(form, text="", style="Tagline.TLabel")
         self.settings_status.grid(row=5, column=1, sticky="w", pady=(16, 0))
 
+        # --- startup -------------------------------------------------------
+        ttk.Label(form, text="Startup", style="Header.TLabel").grid(
+            row=7, column=0, sticky="w", pady=(24, 10)
+        )
+
+        self.preload_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("load_model_on_startup", True))
+        )
+        preload_check = ttk.Checkbutton(
+            form,
+            text="Load the model when the app starts",
+            variable=self.preload_var,
+            command=self._on_preload_toggled,
+        )
+        preload_check.grid(row=8, column=0, columnspan=2, sticky="w", pady=4)
+
+        ttk.Label(
+            form,
+            text="Turned off, the model loads on the first translation instead "
+                 "and the status stays red until then.",
+            style="Tagline.TLabel",
+        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
         # --- cache ----------------------------------------------------------
         ttk.Label(form, text="Translation cache", style="Header.TLabel").grid(
-            row=8, column=0, sticky="w", pady=(24, 10)
+            row=11, column=0, sticky="w", pady=(24, 10)
         )
 
         self.cache_status = ttk.Label(form, text=self._cache_summary(), style="Tagline.TLabel")
-        self.cache_status.grid(row=9, column=0, columnspan=2, sticky="w", pady=4)
+        self.cache_status.grid(row=12, column=0, columnspan=2, sticky="w", pady=4)
 
-        ttk.Button(form, text="Clear cache", command=self.clear_cache).grid(row=10, column=0, pady=4)
+        ttk.Button(form, text="Clear cache", command=self.clear_cache).grid(row=13, column=0, pady=4)
 
         # --- debug: google reference ---------------------------------------
         ttk.Label(form, text="Debug", style="Header.TLabel").grid(
-            row=12, column=0, sticky="w", pady=(24, 10)
+            row=15, column=0, sticky="w", pady=(24, 10)
         )
 
         ttk.Label(
             form,
             text="Google Translate reference for verifying output.",
             style="Tagline.TLabel",
-        ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         ttk.Button(
             form, text="Run Google reference", command=self.run_reference
-        ).grid(row=14, column=0, pady=4)
+        ).grid(row=17, column=0, pady=4)
 
         self.reference_pane = TextPane(
             form, "Google Translate reference", editable=False, placeholder="Reference appears here"
         )
-        self.reference_pane.grid(row=15, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
-        form.rowconfigure(15, weight=1)
+        self.reference_pane.grid(row=18, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        form.rowconfigure(18, weight=1)
         form.columnconfigure(1, weight=1)
 
     # -- helpers ----------------------------------------------------------
     def _cache_summary(self) -> str:
         stats = cache_stats()
         return f"{stats['entries']} saved translation(s) in {stats['dir']}"
+
+    def _on_preload_toggled(self):
+        """Turning the option on should load the model now, not just persist it."""
+        if self.preload_var.get() and not backend.preload_model():
+            self.health_dot.configure(foreground=YELLOW)
+            self.health_text.configure(text="loading…")
+            self.status.set_stats("loading model…", YELLOW)
+            self.status.set_hint("started loading — status turns green when ready")
+            # Nudge the poll so the state is picked up promptly.
+            self.root.after(400, self._check_server)
 
     # -- server status ----------------------------------------------------
     def _check_server(self):
@@ -447,14 +485,28 @@ class DichApp:
             self.health_dot.configure(foreground=GREEN)
             self.health_text.configure(text="ready")
             self.status.set_stats("ready", GREEN)
-        else:
+            if self.status.hint.cget("text").startswith("Loading"):
+                self.status.set_hint("")
+            # Nothing is in flight, so a slow poll is enough.
+            self.root.after(15000, self._check_server)
+            return
+
+        if info.get("loading"):
             self.health_dot.configure(foreground=YELLOW)
-            self.health_text.configure(text="not loaded")
-            self.status.set_hint(
-                f"Model loads on first translation · falls back to "
-                f"{', '.join(info.get('chain', [])[1:]) or 'nothing'}"
-            )
-            self.status.set_stats("idle", SUBTLE)
+            self.health_text.configure(text="loading…")
+            self.status.set_stats("loading model…", YELLOW)
+            self.status.set_hint(f"{info.get('model', '').split('/')[-1]} — first load takes a few seconds")
+            # Poll quickly so the dot turns green the moment it is ready.
+            self.root.after(600, self._check_server)
+            return
+
+        self.health_dot.configure(foreground=RED)
+        self.health_text.configure(text="not loaded")
+        self.status.set_stats("not loaded", RED)
+        self.status.set_hint(
+            f"{info.get('model', '')} · loads on first translation "
+            f"(or enable 'load model on startup' in Settings)"
+        )
         self.root.after(15000, self._check_server)
 
     # -- translate tab ----------------------------------------------------
@@ -512,6 +564,10 @@ class DichApp:
         self.root.config(cursor="")
         self.target_pane.set(result.text)
         self.status.set_progress(100)
+
+        # A first translation loads the model, so the status may still be
+        # showing "not loaded" and would stay red until the next (15s) poll.
+        self.root.after(100, self._check_server)
 
         model_name = (result.model or backend.MODEL_NAME).split("/")[-1]
 
@@ -648,6 +704,7 @@ class DichApp:
             "model": self.model_var.get().strip(),
             "source_language": self.source_var.get().strip(),
             "target_language": self.target_var.get().strip(),
+            "load_model_on_startup": bool(self.preload_var.get()),
         })
 
         try:

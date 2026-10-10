@@ -34,10 +34,11 @@ HERE = Path(__file__).parent
 CONFIG_PATH = HERE / "config.json"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
-    "port": 8000,
+    "model": "mlx-community/translategemma-4b-it-4bit",
     "source_language": "Vietnamese",
     "target_language": "English",
+    "load_model_on_startup": True,
+    "fallback_models": ["mlx-community/Qwen3-4B-Instruct-2507-4bit"],
 }
 
 
@@ -708,20 +709,80 @@ def translate_files(
 # Health
 # ---------------------------------------------------------------------------
 
+# Models whose load has been started but has not finished yet. Lets health
+# reporting distinguish "loading" from "never asked to load".
+_LOADING: set = set()
+
+# Set when preload_model() fails, so the UI can surface why instead of
+# showing an indefinite loading state.
+_LOAD_ERROR: Dict[str, str] = {}
+
+
+def preload_model(model: Optional[str] = None) -> bool:
+    """
+    Start loading a model on a background thread.
+
+    Called at startup when "load model on startup" is enabled, so the UI turns
+    green without the user having to translate anything first. Safe to call
+    repeatedly; returns True if the model is already resident.
+
+    Args:
+        model: Model to load. Defaults to the configured model.
+
+    Returns:
+        True if already loaded, False if a load was just started (or is running).
+    """
+    name = model or MODEL_NAME
+    if not isinstance(name, str):
+        return False
+    engine = get_engine(name)
+    if engine.loaded:
+        return True
+
+    with _ENGINE_LOCK:
+        if name in _LOADING:
+            return False
+        _LOADING.add(name)
+        _LOAD_ERROR.pop(name, None)
+
+    def task():
+        try:
+            engine.load()
+            logger.info(f"Preload of {name} finished")
+        except Exception as e:  # noqa: BLE001 - report through health_check
+            message = f"{type(e).__name__}: {e}"
+            logger.warning(f"Preload of {name} failed: {message}")
+            _LOAD_ERROR[name] = message
+        finally:
+            with _ENGINE_LOCK:
+                _LOADING.discard(name)
+
+    threading.Thread(target=task, daemon=True, name=f"preload-{name}").start()
+    return False
+
+
 def health_check() -> Dict[str, Any]:
     """
-    Check whether the configured model is already loaded in-process, and
-    report the fallback chain so the UI can show what is active.
+    Report the state of the configured model.
+
+    ready    - model is resident and can translate
+    'loading' - a preload is in progress
+    idle     - nothing has asked for the model yet
     """
     chain = [MODEL_NAME] + [m for m in CONFIG.get("fallback_models", []) if m != MODEL_NAME]
     engine = _ENGINES.get(MODEL_NAME)
-    info: Dict[str, Any] = {
-        "ready": bool(engine and engine.loaded),
-        "model": MODEL_NAME,
-        "chain": chain,
-    }
-    if not info["ready"]:
-        info["reason"] = "model not loaded yet (loads on first translation)"
+
+    if engine is not None and engine.loaded:
+        return {"ready": True, "model": MODEL_NAME, "chain": chain}
+
+    if MODEL_NAME in _LOADING:
+        return {"ready": False, "loading": True, "model": MODEL_NAME, "chain": chain}
+
+    info: Dict[str, Any] = {"ready": False, "model": MODEL_NAME, "chain": chain}
+    if MODEL_NAME in _LOAD_ERROR:
+        info["reason"] = _LOAD_ERROR[MODEL_NAME]
+    else:
+        info["reason"] = "not loaded yet (loads on first translation)"
     return info
 
 
