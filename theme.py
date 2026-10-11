@@ -272,9 +272,13 @@ class RoundedButton(tk.Canvas):
     A flat, rounded button with a hover state.
 
     ttk buttons cannot be given rounded corners on the clam theme, so this is a
-    small canvas that draws a pill and tracks the pointer. The canvas sizes
-    itself from the measured text rather than expanding, because a Canvas
-    defaults to a fixed width otherwise.
+    small canvas that draws a pill and tracks the pointer.
+
+    IMPORTANT: the items are created once and never deleted. Recreating them on
+    hover deletes the item currently under the pointer, which makes Tk
+    re-evaluate the pointer's position, fire <Enter> again, and recreate again
+    -- an infinite loop inside Tk's event dispatch that pegs the UI thread and
+    spins the beachball. Hover therefore only recolours existing items.
     """
 
     def __init__(self, master, text, command=None, *, variant="ghost", **kwargs):
@@ -298,48 +302,57 @@ class RoundedButton(tk.Canvas):
 
         font = tkfont.Font(font=self._font)
         self._text_width = int(font.measure(text))
-        width = self._text_width + self._pad_x * 2
+        self._width = self._text_width + self._pad_x * 2
 
         super().__init__(
             master, bg=self._bg_root, highlightthickness=0, bd=0,
-            width=width, height=self._height,
-            scrollregion=(0, 0, width, self._height),
+            width=self._width, height=self._height,
+            scrollregion=(0, 0, self._width, self._height),
             **kwargs,
         )
+
+        self._build_items()
 
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
         self.bind("<Button-1>", self._on_click)
-        self.tag_bind("label", "<Button-1>", self._on_click)
-        self.tag_bind("label", "<Enter>", self._on_enter)
-        self.tag_bind("label", "<Leave>", self._on_leave)
 
-        self._redraw()
-
-    # -- drawing ----------------------------------------------------------
-    def _redraw(self) -> None:
-        self.delete("all")
-        fill = self._hover if self._hovering else self._fill
-        width = self._text_width + self._pad_x * 2
+    # -- construction -----------------------------------------------------
+    def _build_items(self) -> None:
+        """Create the pill and its label exactly once."""
         height = self._height
         radius = height // 2
+        self._shape = self.create_rectangle(
+            0, 0, self._width, height, fill=self._fill, outline=""
+        )
+        self._cap_left = self.create_arc(
+            -radius, 0, radius, height, start=90, extent=180,
+            fill=self._fill, outline="",
+        )
+        self._cap_right = self.create_arc(
+            self._width - radius, 0, self._width + radius, height,
+            start=270, extent=180, fill=self._fill, outline="",
+        )
+        self._label = self.create_text(
+            self._width // 2, height // 2, text=self._text, fill=self._fg,
+            font=self._font,
+        )
 
-        self.create_rectangle(0, 0, width, height, fill=fill, outline="")
-        self.create_arc(-radius, 0, radius, height, start=90, extent=180,
-                        fill=fill, outline="")
-        self.create_arc(width - radius, 0, width + radius, height, start=270, extent=180,
-                        fill=fill, outline="")
-        self.create_text(width // 2, height // 2, text=self._text, fill=self._fg,
-                         font=self._font, tag="label")
+    # -- painting ---------------------------------------------------------
+    def _paint(self, fill: str) -> None:
+        """Recolour the existing items. Never deletes or creates anything."""
+        for item in (self._shape, self._cap_left, self._cap_right):
+            self.itemconfigure(item, fill=fill, outline="")
 
     def _on_enter(self, _event=None):
-        if self._enabled:
+        if self._enabled and not self._hovering:
             self._hovering = True
-            self._redraw()
+            self._paint(self._hover)
 
     def _on_leave(self, _event=None):
-        self._hovering = False
-        self._redraw()
+        if self._hovering:
+            self._hovering = False
+            self._paint(self._fill)
 
     def _on_click(self, _event=None):
         if self._enabled and self.command:
@@ -347,16 +360,33 @@ class RoundedButton(tk.Canvas):
 
     # -- api --------------------------------------------------------------
     def set_text(self, text: str) -> None:
+        """Relabel and resize the button. Not safe to call while hovered."""
         self._text = text
         font = tkfont.Font(font=self._font)
         self._text_width = int(font.measure(text))
-        self._redraw()
+        self._width = self._text_width + self._pad_x * 2
+        self.configure(
+            width=self._width,
+            scrollregion=(0, 0, self._width, self._height),
+        )
+        self.itemconfigure(self._label, text=text)
+        self.coords(self._label, self._width // 2, self._height // 2)
+        radius = self._height // 2
+        self.coords(self._shape, 0, 0, self._width, self._height)
+        self.coords(
+            self._cap_left, -radius, 0, radius, self._height
+        )
+        self.coords(
+            self._cap_right,
+            self._width - radius, 0, self._width + radius, self._height,
+        )
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
         self._fg = SURFACE2 if not enabled else self._original_fg
         self._hovering = False
-        self._redraw()
+        self._paint(self._fill)
+        self.itemconfigure(self._label, fill=self._fg)
 
 
 class SectionLabel(ttk.Label):
