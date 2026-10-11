@@ -383,14 +383,20 @@ class StatusBar(ttk.Frame):
 
         self.stats = ttk.Label(
             self, text="idle", anchor="e",
-            font=("SF Mono", 11), foreground=SUBTLE,
+            font=(theme.MONO_FAMILY, 11), foreground=SUBTLE,
         )
-        self.stats.grid(row=0, column=1, sticky="e")
+        self.stats.grid(row=0, column=1, sticky="e", padx=(theme.SPACE_3, 0))
+
+        self.memory = ttk.Label(
+            self, text="", anchor="e",
+            font=(theme.MONO_FAMILY, 11), foreground=SUBTLE,
+        )
+        self.memory.grid(row=0, column=2, sticky="e")
 
         self.hint = ttk.Label(
-            self, text="", anchor="w", font=("SF Pro Text", 11), foreground=SUBTLE,
+            self, text="", anchor="w", font=(theme.FONT_FAMILY, 11), foreground=SUBTLE,
         )
-        self.hint.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.hint.grid(row=1, column=0, columnspan=3, sticky="w", pady=(theme.SPACE_1, 0))
 
     # -- determinate -----------------------------------------------------
     def set_progress(self, percent: int):
@@ -422,10 +428,15 @@ class StatusBar(ttk.Frame):
     def set_hint(self, text: str):
         self.hint.configure(text=text)
 
+    def set_memory(self, text: str):
+        """Buffer memory readout, shown beside the throughput figures."""
+        self.memory.configure(text=text)
+
     def reset(self):
         self.set_determinate()
         self.progress["value"] = 0
         self.stats.configure(text="idle")
+        self.set_memory("")
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +456,7 @@ class DichApp:
         self.translator = None
         self.audio_path: Path | None = None
         self._mic_opening = False
+        self._memory_polling = False
 
         self._build_style()
         self._build_menu()
@@ -899,6 +911,45 @@ class DichApp:
             f"{LICENCE_SUMMARY}\n\n{HOME_URL}",
         )
 
+    # -- buffer memory ----------------------------------------------------
+    def _poll_memory(self):
+        """
+        Refresh the buffer-memory readout.
+
+        The capture buffer is the only unbounded thing in the audio path: the
+        device pushes audio in continuously while transcription drains it in
+        windows, so if the model falls behind this is where it shows up first.
+        A healthy pipeline keeps it near zero — the live mic measures about 1.5
+        seconds — and a lagging one grows without limit.
+        """
+        if not self._memory_polling:
+            return
+
+        if speech_engine is not None:
+            usage = speech_engine.buffer_usage()
+            label = (
+                f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s"
+                if usage["bytes"] > 0 else ""
+            )
+            self.status.set_memory(label)
+            # Also show it beside the speech tab's own status, since that is
+            # where someone watching a recording looks first.
+            if self.recording:
+                base = "listening…"
+                self.mic_status.configure(
+                    text=f"{base} · {label}" if label else base, foreground=GREEN
+                )
+
+        self.root.after(500, self._poll_memory)
+
+    def _start_memory_poll(self):
+        self._memory_polling = True
+        self._poll_memory()
+
+    def _stop_memory_poll(self):
+        self._memory_polling = False
+        self.status.set_memory("")
+
     def _set_mic_model_label(self, model):
         """Show the label for a model id, falling back to the raw id."""
         label = speech_engine.speech_model_label(str(model))
@@ -1111,6 +1162,7 @@ class DichApp:
         self._new_translator()
         self.transcript_pane.set("")
         self.speech_translation_pane.set("")
+        self._start_memory_poll()
 
         self.worker.run(
             speech_engine.transcribe_file,
@@ -1167,6 +1219,7 @@ class DichApp:
         )
 
     def _on_finalized(self, ok):
+        self._stop_memory_poll()
         self.speech_translation_pane.set(self.translator.render_refined())
         stats = self.translator.stats()
         if ok:
@@ -1263,6 +1316,7 @@ class DichApp:
         self.status.set_stats("listening…", GREEN)
         self._new_translator()
         threading.Thread(target=self._render_speech, daemon=True).start()
+        self._start_memory_poll()
 
     def _on_mic_failed(self, exc: Exception, tb: str):
         self.root.config(cursor="")
@@ -1286,6 +1340,7 @@ class DichApp:
         self.recording = False
         self.mic_button.configure(text="●  Record")
         self.mic_status.configure(text="stopped")
+        self._stop_memory_poll()
         self.status.reset()
         try:
             import speech_engine
@@ -1294,6 +1349,7 @@ class DichApp:
             pass
 
     def clear_speech(self):
+        self._stop_memory_poll()
         self.transcript_pane.set("")
         self.speech_translation_pane.set("")
 
@@ -1411,6 +1467,15 @@ class DichApp:
         except Exception:  # noqa: BLE001
             pass
         self.root.destroy()
+
+
+def _human(num_bytes: int) -> str:
+    """Format a byte count for the status bar, e.g. 3.4 MB."""
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
 
 
 def main():

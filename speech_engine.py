@@ -142,6 +142,25 @@ class SpeechEngine:
         self.stop()
 
     # -- audio capture ----------------------------------------------------
+    def buffer_usage(self) -> dict:
+        """
+        Memory held by the capture buffer.
+
+        Reports both sample counts and bytes, because the buffer is the only
+        unbounded thing in the audio path: the device pushes audio in
+        continuously while transcription drains it in windows, so if the model
+        falls behind the buffer grows and this is where it shows up first.
+        """
+        with self._buffer_lock:
+            samples = self._buffered
+            blocks = len(self._buffer)
+        return {
+            "samples": samples,
+            "seconds": samples / SAMPLE_RATE,
+            "bytes": samples * 4,          # float32 mono
+            "blocks": blocks,
+        }
+
     def _take(self, seconds: float):
         """
         Pop up to `seconds` of audio as one contiguous float32 array.
@@ -539,6 +558,13 @@ def drain_final_sentences() -> list[str]:
     if _engine is None:
         return []
     return _engine.drain_final_sentences()
+
+
+def buffer_usage() -> dict:
+    """Buffer memory held by the active capture, or zeros when idle."""
+    if _engine is None:
+        return {"samples": 0, "seconds": 0.0, "bytes": 0, "blocks": 0}
+    return _engine.buffer_usage()
 
 
 def final_sentences() -> Iterator[str]:
