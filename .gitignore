@@ -1,6 +1,67 @@
+# Python
 __pycache__/
-./__pycache__/..
-*.pyc
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Environment / secrets
 .env
+.env.*
+
+# Project data
 test_data/
-./test_data/..
+*.log
+
+# ---------------------------------------------------------------- models ----
+# Model weights can be gigabytes. Never commit them; fetch from HuggingFace.
+# Individual weight files, in case a model is staged inside the repo.
+*.safetensors
+*.gguf
+*.ggml
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.msgpack
+*.npz
+*.npy
+*.h5
+*.pb
+*.tflite
+*.engine
+*.mlmodel
+*.mlpackage
+*.gguf.json
+*.tokenizer.json
+
+# Model directories and caches by name, wherever they sit in the tree.
+/models/
+/model/
+/model-cache/
+/hf-cache/
+/mlx-cache/
+.cache/
+.cache-models/
+huggingface/
+.huggingface/
+mlx_models/
+transformers_cache/
+torch_cache/
+
+# HuggingFace / MLX caches outside the repo, referenced for clarity:
+#   ~/.cache/huggingface
+#   ~/.cache/mlx
+# A symlink into them must never be committed either.
+.cache
+
+# Whisper / faster-whisper download artefacts
+whisper/
+faster-whisper*
+*.ct2
+
+# macOS
+.DS_Store

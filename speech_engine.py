@@ -50,13 +50,30 @@ MIN_SENTENCE_CHARS = 8        # drop tiny fragments ("uh", "vâng" alone)
 # sample, which catches the quiet-but-warm mic noise a real device produces.
 SILENCE_FLOOR = 0.003
 # Batch/file transcription favours accuracy; live mic keeps up with a speaker.
-# Measured on this M5 for Vietnamese: small 6.4x realtime but mangles proper
-# nouns badly ("Tũ" for "Tú"), medium 2.4x realtime and reads them correctly.
-# Medium is the default because a wrong transcript is worse than a lag: it
-# trails the speaker by roughly 7 seconds, which is still semi-realtime.
+# Measured for Vietnamese on an Apple M5 with 10-second windows. Realtime is how
+# much faster than the speaker the model transcribes: above ~1.0 it keeps up,
+# below that the transcript progressively lags behind speech.
 FILE_MODEL = "large-v3-turbo"
 LIVE_MODEL = "medium"
 DEFAULT_MODEL = LIVE_MODEL
+
+# (model id, UI label carrying its measured realtime cost)
+SPEECH_MODELS = [
+    ("tiny", "tiny — very rough, 16× realtime"),
+    ("base", "base — rough, 8× realtime"),
+    ("small", "small — mis-hears names, 6.4× realtime"),
+    ("medium", "medium — good, 2.2× realtime (default)"),
+    ("large-v3-turbo", "large-v3-turbo — best, 0.3× realtime (3.6× slower)"),
+]
+SPEECH_MODEL_IDS = [name for name, _label in SPEECH_MODELS]
+
+
+def speech_model_label(model: str) -> str:
+    """UI label for a model id, carrying its measured realtime cost."""
+    for name, label in SPEECH_MODELS:
+        if name == model:
+            return label
+    return model
 
 _END_PUNCT = ".?!。！？…"
 # vietnamese final particles / connectors that usually close a sentence

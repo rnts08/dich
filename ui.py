@@ -15,6 +15,7 @@ import json
 import queue
 import re
 import threading
+import webbrowser
 import tkinter as tk
 import traceback
 from pathlib import Path
@@ -69,6 +70,17 @@ RED = theme.RED
 YELLOW = theme.YELLOW
 BLUE = theme.BLUE
 CACHE_LABEL = "loaded from cache"
+
+HOME_URL = "https://github.com/rnts08/dich"
+COPYRIGHT = "© 2026 Tim Bergström"
+LICENCE_SUMMARY = (
+    "Non-commercial use only.\n\n"
+    "You may use, copy and modify this software for personal, educational and "
+    "other non-commercial purposes. Commercial use, including embedding it in a "
+    "paid product or offering it as a paid service, is not permitted without "
+    "written permission from the copyright holder.\n\n"
+    "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND."
+)
 VERSION = backend.VERSION
 SUPPORTED_EXTS = [".txt", ".md", ".markdown", ".pdf", ".docx", ".docm", ".doc", ".rtf"]
 FILE_TYPES = [
@@ -742,19 +754,20 @@ class DichApp:
         ).grid(row=12, column=2, padx=theme.SPACE_2)
 
         ttk.Label(form, text="Speech model").grid(row=13, column=0, sticky="w", pady=6)
-        self.mic_model_var = tk.StringVar(
-            value=str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL))
-        )
-        ttk.Combobox(
+        self.mic_model_var = tk.StringVar()
+        self.mic_model_labels = [label for _name, label in speech_engine.SPEECH_MODELS]
+        self.mic_model_combo = ttk.Combobox(
             form, textvariable=self.mic_model_var, width=54,
-            values=["tiny", "base", "small", "medium", "large-v3-turbo"],
-        ).grid(row=13, column=1, sticky="w", pady=6)
+            values=self.mic_model_labels, state="readonly",
+        )
+        self.mic_model_combo.grid(row=13, column=1, sticky="w", pady=6)
+        self._set_mic_model_label(backend.CONFIG.get("mic_model"))
 
         ttk.Label(
             form,
-            text="The speech model only runs while recording. Larger models read "
-                 "Vietnamese better but fall behind a live speaker: small is "
-                 "about 16x realtime, large-v3-turbo about 3.6x.",
+            text="Only runs while recording. Realtime figures measured for "
+                 "Vietnamese on an Apple M5; above 1× keeps up with a speaker, "
+                 "below means the transcript lags.",
             style="Faint.TLabel",
         ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
@@ -809,6 +822,33 @@ class DichApp:
         form.rowconfigure(23, weight=1)
         form.columnconfigure(1, weight=1)
 
+        # --- about ---------------------------------------------------------
+        self._section(form, "About", row=25)
+
+        ttk.Label(form, text=f"{APP_NAME} v{VERSION}", style="H2.TLabel").grid(
+            row=26, column=0, sticky="w", pady=2
+        )
+        ttk.Label(
+            form, text="A local Vietnamese → English translator.", style="Faint.TLabel"
+        ).grid(row=27, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        theme.SectionLabel(form, "© 2026 Tim Bergström").grid(
+            row=28, column=0, sticky="w", pady=2
+        )
+        ttk.Label(
+            form, text="Non-commercial use only. See LICENSE.", style="Faint.TLabel"
+        ).grid(row=29, column=0, sticky="w", pady=(0, 6))
+
+        theme.RoundedButton(
+            form, "Home: github.com/rnts08/dich", command=self.open_home,
+            variant="ghost", background=theme.SURFACE0,
+        ).grid(row=30, column=0, sticky="w", pady=(0, 8))
+
+        theme.RoundedButton(
+            form, "Show licence", command=self.show_licence, variant="quiet",
+            background=theme.SURFACE0,
+        ).grid(row=30, column=2, sticky="w")
+
     # -- helpers ----------------------------------------------------------
     def _section(self, form, title, row):
         """Settings section heading, drawn on the card surface."""
@@ -847,6 +887,30 @@ class DichApp:
             if device_index == index:
                 return name
         return f"Device {index} (not present)"
+
+    # -- about ------------------------------------------------------------
+    def open_home(self):
+        """Open the project home page in the default browser."""
+        webbrowser.open(HOME_URL, new=2)
+
+    def show_licence(self):
+        messagebox.showinfo(
+            f"Licence — {APP_NAME}",
+            f"{LICENCE_SUMMARY}\n\n{HOME_URL}",
+        )
+
+    def _set_mic_model_label(self, model):
+        """Show the label for a model id, falling back to the raw id."""
+        label = speech_engine.speech_model_label(str(model))
+        self.mic_model_var.set(label if label in self.mic_model_labels else str(model))
+
+    def _selected_mic_model(self) -> str:
+        """Map the chosen label back to a model id."""
+        chosen = self.mic_model_var.get()
+        for name, label in speech_engine.SPEECH_MODELS:
+            if label == chosen:
+                return name
+        return str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL))
 
     def _on_preload_toggled(self):
         """Turning the option on should load the model now, not just persist it."""
@@ -1293,7 +1357,7 @@ class DichApp:
             "target_language": self.target_var.get().strip(),
             "load_model_on_startup": bool(self.preload_var.get()),
             "mic_device_index": self._selected_device(),
-            "mic_model": self.mic_model_var.get().strip(),
+            "mic_model": self._selected_mic_model(),
             "refine_every": int(self.refine_var.get()),
         })
 
