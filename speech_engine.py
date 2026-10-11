@@ -22,6 +22,7 @@ Requires: pip install sounddevice faster-whisper numpy av
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -30,6 +31,14 @@ from pathlib import Path
 from typing import Iterator, List, Optional
 
 import numpy as np
+
+# faster-whisper downloads through huggingface_hub, which reads these once at
+# import time. backend.py sets them too, but this module can be imported on its
+# own, and pointing them at ~/.config/dich/models is what keeps a fresh install
+# from re-downloading a model it already has.
+os.environ.setdefault("HF_HOME", str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich"))))
+os.environ.setdefault("HF_HUB_CACHE", str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich")) / "models"))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich")) / "models"))
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +54,13 @@ SAMPLE_RATE = 16000
 WINDOW_SECONDS = 10.0
 SILENCE_SECONDS = 0.8         # trailing silence that ends an utterance
 MIN_SENTENCE_CHARS = 8        # drop tiny fragments ("uh", "vâng" alone)
+# Segments to accumulate before flushing. Whisper returns several segments per
+# window; without a cap, continuous speech parks everything in _pending.
+MAX_SEGMENTS_PER_EMIT = 4
+# The tail share of a window that must be quieter than the window average for
+# the utterance to count as finished.
+TRAILING_SHARE = 0.25
+TRAILING_RATIO = 0.2
 # Peak amplitude below which a window is treated as silence. The decibel
 # threshold in _trailing_silence uses an RMS figure; this is the loudest single
 # sample, which catches the quiet-but-warm mic noise a real device produces.
@@ -96,6 +112,8 @@ class SpeechEngine:
         self._buffered = 0
         self._buffer_lock = threading.Lock()
         self._pending = ""
+        self._pending_segments = 0
+        self._last_samples = None
         self._final: "queue.Queue[str]" = queue.Queue()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -229,17 +247,41 @@ class SpeechEngine:
             logger.warning(f"Transcribe window failed: {type(e).__name__}: {e}")
             return
 
+        self._last_samples = samples
+        self._ingest_segments(segments, len(samples) / SAMPLE_RATE)
+
+    def _ingest_segments(self, segments, window_seconds: float) -> None:
+        """
+        Fold transcribed segments into sentences and queue the finished ones.
+
+        Split out from _process_window so the sentence-assembly rules can be
+        exercised without a microphone: they are the part with the subtle
+        failure modes.
+        """
         for seg in segments:
             text = _strip_hallucinations(seg.text.strip())
             if not text:
                 continue
             self._pending = f"{self._pending} {text}".strip()
-            if self._is_complete(self._pending) or (seg.end - seg.start) >= WINDOW_SECONDS:
+            self._pending_segments += 1
+
+            # Flush on any of three triggers. The first alone is not enough: a
+            # sentence-final marker frequently never appears in speech, and
+            # comparing a segment's length against the whole window cannot fire
+            # because a segment cannot span the window. Without the segment
+            # count, continuous speech accumulates in _pending and nothing is
+            # ever emitted.
+            near_window_end = seg.end >= window_seconds - 1.5
+            if (self._is_complete(self._pending)
+                    or self._pending_segments >= MAX_SEGMENTS_PER_EMIT
+                    or near_window_end):
                 self._emit(self._pending)
                 self._pending = ""
 
-        # Trailing silence closes the utterance.
-        if self._pending and self._trailing_silence(samples):
+        # Trailing silence closes the utterance. Judged against the window's own
+        # level rather than a fixed number: an absolute 0.005 sits above ordinary
+        # room noise, so it never fired in a quiet room.
+        if self._pending and self._trailing_silence(self._last_samples):
             self._emit(self._pending)
             self._pending = ""
 
@@ -252,19 +294,33 @@ class SpeechEngine:
         return last in _END_WORDS
 
     def _trailing_silence(self, samples) -> bool:
-        """True if the tail of the window is quiet."""
+        """
+        True if the tail of the window is much quieter than the window as a
+        whole.
+
+        Relative, not absolute: an absolute RMS threshold sits above ordinary
+        room noise, so in a quiet room it never fired and an utterance was left
+        hanging in `_pending` even though the speaker had finished.
+        """
         import numpy as np
 
-        tail = samples[int(len(samples) * 0.75):]
+        if len(samples) == 0:
+            return False
+        tail = samples[int(len(samples) * (1.0 - TRAILING_SHARE)):]
         if len(tail) == 0:
             return False
-        return bool(np.sqrt(np.mean(tail ** 2)) < 0.005)
+        whole = float(np.sqrt(np.mean(samples ** 2)))
+        tail_rms = float(np.sqrt(np.mean(tail ** 2)))
+        if whole <= 0.0:
+            return False
+        return tail_rms < whole * TRAILING_RATIO
 
     def _emit(self, text: str):
         cleaned = " ".join(text.split())
         if len(cleaned) < MIN_SENTENCE_CHARS:
             return
         self._final.put(cleaned)
+        self._pending_segments = 0
 
     def _flush_pending(self):
         if self._pending.strip():

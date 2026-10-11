@@ -15,7 +15,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -28,10 +30,39 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Locations - everything the app owns lives under ~/.config/dich
 # ---------------------------------------------------------------------------
-HERE = Path(__file__).parent
-CONFIG_PATH = HERE / "config.json"
+# The model cache is redirected before huggingface_hub is first imported, which
+# is why it happens at module import rather than in a function: the library
+# reads these variables once at import time. Keeping models here puts every
+# weight in one place instead of splitting them between HuggingFace's default
+# cache and the working directory.
+CONFIG_ROOT = Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich"))
+MODELS_DIR = CONFIG_ROOT / "models"
+CONFIG_PATH = CONFIG_ROOT / "config.json"
+LEGACY_CONFIG_PATH = Path(__file__).parent / "config.json"
+
+os.environ.setdefault("HF_HOME", str(CONFIG_ROOT))
+os.environ.setdefault("HF_HUB_CACHE", str(MODELS_DIR))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(MODELS_DIR))
+
+
+def _migrate_legacy_config() -> None:
+    """
+    Copy the in-repo config.json to ~/.config/dich on first run.
+
+    Without this, an install that already has a working config.json beside the
+    code would silently fall back to defaults and lose the chosen model.
+    """
+    if CONFIG_PATH.exists() or not LEGACY_CONFIG_PATH.exists():
+        return
+    try:
+        CONFIG_ROOT.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(LEGACY_CONFIG_PATH, CONFIG_PATH)
+        logger.info(f"Migrated config to {CONFIG_PATH}")
+    except OSError as e:
+        logger.warning(f"Could not migrate config to {CONFIG_PATH}: {e}")
+
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "model": "mlx-community/translategemma-4b-it-4bit",
@@ -41,15 +72,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "fallback_models": ["mlx-community/Qwen3-4B-Instruct-2507-4bit"],
     # --- microphone ---
     "mic_device_index": None,       # null = the system default microphone
-    "mic_model": "small",            # fast enough to keep up with a speaker
+    "mic_model": "medium",           # accurate enough, keeps up at 10s windows
     "refine_every": 6,               # utterances between block re-translations
 }
 
 
 def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load configuration from config.json, merged over defaults."""
+    """
+    Load config.json, merged over defaults.
+
+    Reads from ~/.config/dich/config.json, migrating an in-repo copy on first
+    run so an existing configuration is not thrown away.
+    """
     config = dict(DEFAULT_CONFIG)
-    path = path or CONFIG_PATH
+    if path is None:
+        _migrate_legacy_config()
+        path = CONFIG_PATH
     if path.exists():
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -59,7 +97,18 @@ def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
     return config
 
 
-VERSION_FILE = HERE / "VERSION"
+def ensure_dirs() -> None:
+    """Create ~/.config/dich and its models directory."""
+    try:
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(f"Could not create {MODELS_DIR}: {e}")
+
+
+ensure_dirs()
+
+
+VERSION_FILE = Path(__file__).parent / "VERSION"
 
 
 def get_version() -> str:
