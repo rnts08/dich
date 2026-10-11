@@ -8,8 +8,9 @@ Vietnamese → English translator, running a local MLX model.
 .venv/bin/python3 ui.py
 ```
 
-The model loads in-process on the first translation and stays resident, so there
-is no separate server process to start.
+The model loads in-process and stays resident, so there is no separate server
+process to start. By default it loads when the app starts; a Settings checkbox
+switches that to load-on-first-translation instead.
 
 ## Where things live
 
@@ -31,8 +32,8 @@ An existing `config.json` sitting beside the code is copied across on first run
 so a configured install keeps its settings.
 
 Both were verified to load with the network disabled, so a second run does not
-re-download. Set `DICH_HOME` to relocate them, which is also how the tests
-relocate them.
+re-download. Set `DICH_HOME` to relocate them — useful for isolating a second
+copy of the app.
 
 To free space, delete a directory under `models/` — it re-downloads the next
 time that model is asked for.
@@ -44,16 +45,52 @@ time that model is asked for.
 | `ui.py` | Tkinter app: Translate / Speech / Settings tabs |
 | `backend.py` | text extraction, prompt strategies, cache, engine, contextual translation |
 | `speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
-| `config.json` | model, languages, `fallback_models`, `load_model_on_startup` |
 | `VERSION` | single source of truth for the version |
+| `config.json` | first-run seed; the live copy lives at `~/.config/dich` |
 | `dev/bump_version.py` | bumps patch/minor, commits, and tags |
 | `test_data/` | sample documents and a Vietnamese speech recording (gitignored) |
+
+## Translate tab
+
+Open a file (**File → Open Document…**, or `Cmd+O`) or paste text into the left
+pane; the translation appears on the right.
+
+| Format | Extracted by |
+|---|---|
+| PDF | `pypdf` |
+| DOCX / DOCM / DOC | `python-docx`, plus macOS `textutil` for legacy `.doc` |
+| RTF | `striprtf` |
+| Markdown | `markdown` |
+| TXT | direct |
+
+Supported extensions: `txt md markdown pdf docx docm doc rtf`.
+
+Long documents are split on paragraph boundaries into batches of at most 24
+paragraphs and 8000 characters, translated in turn, and re-joined — a context
+limit avoids truncation. The status bar shows a determinate progress bar across
+batches plus words and tokens/sec.
+
+The translation renders as **Markdown** — headings, bold, italic, code, lists,
+quotes — and the model is asked to emit Markdown, so a translated document keeps
+its structure rather than arriving as flat text. The raw Markdown is kept
+alongside so **Save…** writes the source rather than the decorated copy.
+
+Every finished translation is cached under `/tmp/dich-cache`, keyed on the model,
+both languages and the exact text. Re-opening an unchanged document returns
+instantly and shows a green `loaded from cache` badge; editing the text changes
+the key and re-translates.
+
+**Settings → Debug** holds a Google Translate reference for checking output
+against an independent translator, including the source text currently loaded.
+
+A native **menu bar** (File / Edit / View / Help) mirrors the toolbar buttons —
+each dispatches to the same handler, so there is one path per action.
 
 ## Speech tab
 
 Two ways in:
 
-**Record** — listens to the microphone, transcribes Vietnamese, and translates
+- **Record** — listens to the microphone, transcribes Vietnamese, and translates
   as it goes.
 - **Open Audio…** — transcribes an audio file (`mp3`, `wav`, `m4a`, …). This uses
   `large-v3-turbo`, which is far more accurate in Vietnamese than the live model
@@ -87,7 +124,6 @@ In Settings → Microphone:
 
 The speech model defaults to `small`, measured for Vietnamese on an M5:
 
-
 | Model | Realtime | Accuracy |
 |---|---|---|
 | `tiny` | 16× | very rough |
@@ -95,6 +131,7 @@ The speech model defaults to `small`, measured for Vietnamese on an M5:
 | `small` | ~2× at 2s windows | keeps up (default) |
 | `medium` | 0.49× at 2s / 2.2× at 10s | better proper nouns |
 | `large-v3-turbo` | slowest | best |
+
 `small` is the default because it keeps up at a 2-second window; choose
 `medium` or `large-v3-turbo` when a name being heard correctly matters more
 than latency.
@@ -114,15 +151,16 @@ in 1.3s`. With a 2-second window the first words appear **1.2s after speech
 starts**; at the old 10-second window they took 10s, which read as the app doing
 nothing at all.
 
-A window that produces text fast does not have to keep up -- the buffer holds
+A window that produces text fast does not have to keep up — the buffer holds
 the audio and it catches up during a pause. That is what the buffer ceiling is
 for: raise it to let a slower model catch up, or to hold a long recording for
 re-transcribing. `small` at 2s keeps up (1.3x), so the countdown stays short.
-and keeps an unsaved selection.
 
-If a configured device disappears — unplugged, or device order changed — the
-engine falls back to the system default and logs why, rather than dying with a
-PortAudio error.
+Resolution shows the real sample rate, so a microphone that cannot do 16 kHz is
+visible before it fails. **Rescan** picks up mics plugged in or removed later,
+and keeps an unsaved selection. If a configured device disappears — unplugged,
+or device order changed — the engine falls back to the system default and logs
+why, rather than dying with a PortAudio error.
 
 ### Buffer memory
 
@@ -143,8 +181,8 @@ t=18.6s  buffer= 8.5s  531.2 KB
 ```
 
 If the model cannot keep up, the sawtooth becomes a ramp and the number grows
-without limit — which is what this readout is for. `large-v3-turbo` at 0.3×
-realtime is exactly that case, so expect it to climb.
+without limit — which is what this readout is for. `large-v3-turbo` is far slower
+than realtime and is exactly that case, so expect it to climb.
 
 Recording opens the microphone off the UI thread, because `sd.InputStream()`
 blocks until macOS decides whether to grant microphone permission. In a context
@@ -196,7 +234,8 @@ The version policy:
 - **0.4.x** — translation features
 - **0.5.x** — tests and release
 
-`ROADMAP.md` tracks the remaining work against those milestones.
+`ROADMAP.md` tracks the longer-horizon milestones; `BACKLOG.md` is the
+prioritised list of what to pick up next.
 
 Bump a patch for every fix, feature, or change; bump a minor when starting a new
 milestone (for example 0.1.x → 0.2.0 when speech-to-text begins).
@@ -243,14 +282,18 @@ future debugger needs.
 ## Dependencies
 
 ```bash
-pip install mlx-lm pypdf python-docx striprtf markdown
+pip install mlx-lm httpx pypdf python-docx striprtf markdown
+# for speech only:
+pip install sounddevice faster-whisper av
 ```
+
+`tkinter` ships with Python.
 
 ## Notes
 
 `mlx-audio` 0.5.8 is installed on this machine as a `uv` tool. Its STT cannot
-run `mlx-community/whisper-large-v3-turbo` -- it raises `Processor not found.
+run `mlx-community/whisper-large-v3-turbo` — it raises `Processor not found.
 Make sure the model was loaded with a HuggingFace processor`, including from its
-own CLI -- so it is not used. If it can be made to work it would move
+own CLI — so it is not used. If it can be made to work it would move
 transcription onto the GPU, which is the real answer to the latency tradeoff
 above rather than trading accuracy for it.
