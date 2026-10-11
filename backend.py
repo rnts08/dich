@@ -326,11 +326,19 @@ SYSTEM_PROMPT = (
     "Rules:\n"
     "1. Translate by MEANING and CONCEPT, not word for word. Render idioms, "
     "proverbs, honorifics and figurative language as a native {target} writer would.\n"
-    "2. Preserve formatting: keep line breaks, bullet lists, numbering, "
-    "headings and markdown structure in place.\n"
+    "2. Preserve formatting. Output as **Markdown**: keep headings, lists and "
+    "emphasis where the source has them, and use them where the meaning benefits.\n"
     "3. Do NOT leave any {source} untranslated. Do NOT add explanations, "
     "notes, transliterations or a preamble.\n"
-    "4. Output ONLY the {target} translation."
+    "4. Output ONLY the {target} translation, as Markdown."
+)
+
+# Appended for models whose own chat template supplies the translation
+# instruction (TranslateGemma), so the same Markdown behaviour is requested
+# without a system turn to put it in.
+MARKDOWN_INSTRUCTION = (
+    "\n\nFormat the translation as Markdown: preserve headings, lists and "
+    "emphasis, and use them where the meaning benefits."
 )
 
 
@@ -485,15 +493,19 @@ class LocalEngine:
     def build_messages(self, chunk: str) -> list:
         """Shape the request for this model's expected format."""
         if get_profile(self.model_name)["prompt_style"] == "translategemma":
-            # Only the language tags; the template injects the translator
-            # instruction itself, so nothing may be appended to the text.
+            # The template injects the translator instruction itself, so only
+            # the language tags are supplied. The Markdown request rides along
+            # with the source text, since there is no system turn to hold it.
+            text = chunk
+            if MARKDOWN_INSTRUCTION.strip() not in chunk:
+                text = chunk + MARKDOWN_INSTRUCTION
             return [{
                 "role": "user",
                 "content": [{
                     "type": "text",
                     "source_lang_code": _lang_code(SOURCE_LANGUAGE),
                     "target_lang_code": _lang_code(TARGET_LANGUAGE),
-                    "text": chunk,
+                    "text": text,
                 }],
             }]
         return [
@@ -821,7 +833,9 @@ class ContextualTranslator:
         """
         Add a Vietnamese utterance and return its current translation.
 
-        Every `refine_every` utterances, the block is re-translated wholesale.
+        Every `refine_every` utterances, only the newly accumulated ones are
+        re-translated as a passage; earlier output is left alone because it has
+        already been through refinement.
         """
         sentence = sentence.strip()
         if not sentence:
@@ -840,23 +854,41 @@ class ContextualTranslator:
             self.refine()
         return english
 
-    def refine(self, start: int = 0) -> bool:
-        """
-        Re-translate `transcript[start:]` as one passage and replace those
-        lines with the coherent result.
+    @property
+    def block_start(self) -> int:
+        """Index of the first utterance not yet refined."""
+        for i, done in enumerate(self.elaborate):
+            if not done:
+                return i
+        return len(self.transcript)
 
-        The model is free to return a different number of lines than it was
-        given, so the merged text is kept verbatim and the per-line guesses are
-        only overwritten where the mapping is unambiguous. Every index in the
-        block is marked refined, because the block really was re-translated;
-        `blocks` holds the authoritative text for display.
+    def refine(self, start: Optional[int] = None) -> bool:
         """
+        Translate `transcript[start:]` as one passage, replacing those lines
+        with the coherent result.
+
+        `start` defaults to the first unrefined index, so a refinement never
+        re-translates sentences already refined. Earlier blocks only change when
+        their own sentences do, and re-reading them cost 1.6x the necessary
+        model calls for no gain in output. The earlier conversation is supplied
+        as context turns instead, so the new block still reads as a continuation
+        without re-reading what came before.
+
+        The model may return a different number of lines than it was given, so
+        the merged text is kept verbatim and per-line guesses are only
+        overwritten where the mapping is unambiguous. Every index in the block
+        is marked refined, because the block really was re-translated;
+        `refined_blocks` holds the authoritative text for display.
+        """
+        if start is None:
+            start = self.block_start
         block = self.transcript[start:]
         if not block:
             return False
 
+        history = list(zip(self.transcript[:start], self.translation[:start]))
         try:
-            merged = translate_block(block)
+            merged = translate_block(block, history=history)
         except Exception as e:  # noqa: BLE001 - keep earlier results usable
             self._last_error = f"{type(e).__name__}: {e}"
             logger.warning(f"Block refinement failed: {self._last_error}")
@@ -908,6 +940,18 @@ class ContextualTranslator:
         return "\n".join(text for _index, text in out if text)
 
     # -- output -----------------------------------------------------------
+    def finalize(self) -> bool:
+        """
+        Refine whatever is left once no more speech is coming.
+
+        Without this, a partial trailing block -- four utterances after the last
+        `refine_every` boundary -- would stay as provisional line-by-line guesses
+        even though nothing further will give them context.
+        """
+        if self.block_start >= len(self.transcript):
+            return False
+        return self.refine(self.block_start)
+
     def render(self) -> str:
         return "\n".join(
             en if en else "(pending)" for en in self.translation
@@ -951,11 +995,27 @@ def translate_utterance(sentence: str, history: List[tuple],
     return text
 
 
-def translate_block(sentences: List[str], model: Optional[str] = None) -> str:
-    """Translate several sentences as one passage, preserving line structure."""
+def translate_block(
+    sentences: List[str],
+    model: Optional[str] = None,
+    history: Optional[List[tuple]] = None,
+) -> str:
+    """
+    Translate several sentences as one passage, preserving line structure.
+
+    Args:
+        sentences: The new sentences to translate together.
+        model: Optional model override.
+        history: Prior (vietnamese, english) pairs supplied as context turns, so
+            a partial block reads as a continuation without re-translating what
+            came before.
+    """
     name = model or MODEL_NAME
     engine = get_engine(name)
-    return engine.run_block("\n".join(sentences), model=name).text
+    style = get_profile(name)["prompt_style"]
+    messages = _context_messages("\n".join(sentences), history or [], style)
+    text, _tokens = engine.run_messages(messages, max_tokens=1024)
+    return text
 
 
 def _split_translation(text: str, expected: int) -> List[str]:
