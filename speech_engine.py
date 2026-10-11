@@ -34,12 +34,28 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-WINDOW_SECONDS = 3.0          # audio sent to the transcriber at a time
+# A longer window matters more than it looks: each transcribe() call carries
+# fixed overhead, so short windows multiply it. Measured on this M5 with the
+# medium model on Vietnamese speech:
+#     3s window  -> 0.84x realtime   (falls behind the speaker)
+#     6s window  -> 1.46x realtime
+#    10s window  -> 2.00x realtime   (keeps up, and yields *more* segments
+#                                     because Whisper sees whole clauses)
+# The cost is latency to the first word, which is the right trade here.
+WINDOW_SECONDS = 10.0
 SILENCE_SECONDS = 0.8         # trailing silence that ends an utterance
 MIN_SENTENCE_CHARS = 8        # drop tiny fragments ("uh", "vâng" alone)
-# Batch/file transcription favours accuracy; live mic favours keeping up.
+# Peak amplitude below which a window is treated as silence. The decibel
+# threshold in _trailing_silence uses an RMS figure; this is the loudest single
+# sample, which catches the quiet-but-warm mic noise a real device produces.
+SILENCE_FLOOR = 0.003
+# Batch/file transcription favours accuracy; live mic keeps up with a speaker.
+# Measured on this M5 for Vietnamese: small 6.4x realtime but mangles proper
+# nouns badly ("Tũ" for "Tú"), medium 2.4x realtime and reads them correctly.
+# Medium is the default because a wrong transcript is worse than a lag: it
+# trails the speaker by roughly 7 seconds, which is still semi-realtime.
 FILE_MODEL = "large-v3-turbo"
-LIVE_MODEL = "small"
+LIVE_MODEL = "medium"
 DEFAULT_MODEL = LIVE_MODEL
 
 _END_PUNCT = ".?!。！？…"
@@ -56,7 +72,11 @@ class SpeechEngine:
     def __init__(self, model_size: str = DEFAULT_MODEL, device_index: Optional[int] = None):
         self.model_size = model_size
         self.device_index = device_index
-        self._buffer: "deque[float]" = deque()
+        # Numpy blocks, not a list of Python floats: the audio callback fires
+        # ~30x a second and copying through .tolist() then back through
+        # np.asarray() costs more than the transcription for a 3s window.
+        self._buffer: "deque" = deque()
+        self._buffered = 0
         self._buffer_lock = threading.Lock()
         self._pending = ""
         self._final: "queue.Queue[str]" = queue.Queue()
@@ -72,7 +92,9 @@ class SpeechEngine:
 
         def on_audio(indata, frames, time_info, status):  # noqa: ARG001
             with self._buffer_lock:
-                self._buffer.extend(indata[:, 0].tolist())
+                mono = np.ascontiguousarray(indata[:, 0])
+                self._buffer.append((mono, len(mono)))
+                self._buffered += len(mono)
 
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -103,40 +125,83 @@ class SpeechEngine:
         self.stop()
 
     # -- audio capture ----------------------------------------------------
-    def _take(self, seconds: float) -> list:
-        """Pop up to `seconds` of audio from the capture buffer."""
+    def _take(self, seconds: float):
+        """
+        Pop up to `seconds` of audio as one contiguous float32 array.
+
+        Blocks are drained only when a whole window is available, so a partial
+        window stays buffered until it can be transcribed in one piece.
+        """
+        import numpy as np
+
         want = int(seconds * SAMPLE_RATE)
         with self._buffer_lock:
-            if len(self._buffer) < want:
-                return []
-            return [self._buffer.popleft() for _ in range(want)]
+            if self._buffered < want:
+                return None
+            parts, remaining = [], want
+            while remaining > 0 and self._buffer:
+                block, length = self._buffer[0]
+                if length <= remaining:
+                    parts.append(block)
+                    remaining -= length
+                    self._buffer.popleft()
+                    self._buffered -= length
+                else:
+                    parts.append(block[:remaining])
+                    self._buffer[0] = (block[remaining:], length - remaining)
+                    remaining = 0
+            if not parts:
+                return None
+            return parts[0] if len(parts) == 1 else np.concatenate(parts)
 
     # -- transcription ----------------------------------------------------
     def _transcribe_loop(self):
         while not self._stop.is_set():
             audio = self._take(WINDOW_SECONDS)
-            if not audio:
+            if audio is None:
                 time.sleep(0.05)
                 continue
             self._process_window(audio)
 
     def _process_window(self, audio: list):
+        """
+        Transcribe one window of audio into the pending sentence buffer.
+
+        The Whisper settings matter more than they look:
+          * vad_filter - without it, every window of near-silence is transcribed
+            anyway, and Whisper hallucinates on silence. All-zero audio came
+            back as a full sentence of YouTube outro text.
+          * condition_on_previous_text - when true, a hallucination feeds itself
+            and the same phrase repeats for the rest of the session.
+          * initial_prompt - a Vietnamese hint is echoed back verbatim by the
+            decoder on silence, so it does more harm than good here.
+        """
         import numpy as np
 
         samples = np.asarray(audio, dtype=np.float32)
-        segments, _info = self._model.transcribe(
-            samples, language="vi", beam_size=5,
-            without_timestamps=False, condition_on_previous_text=True,
-            initial_prompt=_prompt_hint(),
-        )
+        if samples.size == 0:
+            return
+        if float(np.abs(samples).max()) < SILENCE_FLOOR:
+            return  # effectively quiet; do not let the model invent text
+        try:
+            segments, _info = self._model.transcribe(
+                samples, language="vi", beam_size=5,
+                vad_filter=True,                     # drop non-speech
+                condition_on_previous_text=False,    # no hallucination feedback
+            )
+        except Exception as e:  # noqa: BLE001 - a failed window must not kill capture
+            logger.warning(f"Transcribe window failed: {type(e).__name__}: {e}")
+            return
+
         for seg in segments:
-            text = seg.text.strip()
+            text = _strip_hallucinations(seg.text.strip())
             if not text:
                 continue
             self._pending = f"{self._pending} {text}".strip()
             if self._is_complete(self._pending) or (seg.end - seg.start) >= WINDOW_SECONDS:
                 self._emit(self._pending)
                 self._pending = ""
+
         # Trailing silence closes the utterance.
         if self._pending and self._trailing_silence(samples):
             self._emit(self._pending)
@@ -189,13 +254,55 @@ class SpeechEngine:
                 return out
 
 
+_HALLUCINATION_MARKERS = (
+    "subscribe",
+    "đăng ký kênh",
+    "không bỏ lỡ",
+    "video hấp dẫn",
+    "hẹn gặp lại",
+    "video này",
+    "video sau",
+    "cảm ơn các bạn",
+    "cảm ơn mọi người",
+    "cảm ơn quý vị",
+    "quay lại trong video",
+    "nhấn like",
+    "hãy like",
+    "xin chào và chào mừng",
+    "chào mừng bạn đến với",
+    "giữ nguyên dấu",
+    "transcribe the following",
+    "thank you for watching",
+    "please subscribe",
+    "thanks for watching",
+)
+
+
+def _is_hallucination(text: str) -> bool:
+    """True when the whole string is a decoding artefact."""
+    lowered = text.lower()
+    return any(marker in lowered for marker in _HALLUCINATION_MARKERS)
+
+
+def _strip_hallucinations(text: str) -> str:
+    """
+    Remove hallucinated boilerplate from *within* a sentence.
+
+    Whisper's silence artefacts do not always arrive as a clean standalone
+    segment: they get spliced into real speech, so "à không con đi ở nhà Cảm
+    ơn các bạn và hẹn gặp lại video này cho thèo à" is one segment that must be
+    trimmed rather than dropped. Sentences are split on punctuation and any
+    part containing a marker is discarded.
+    """
+    import re
+
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+    kept = [p for p in parts if p.strip() and not _is_hallucination(p)]
+    return " ".join(kept).strip()
+
+
 def _prompt_hint() -> str:
-    """Bias the decoder toward Vietnamese vocabulary."""
-    return (
-        "Đây là đoạn hội thoại tiếng Việt. Chép lại chính xác bằng tiếng Việt: "
-        "ư, ơ, ă, â, ê, ô, ồ, đ, sắc, huyền, hỏi, ngã, nặng. "
-        "Giữ nguyên dấu thanh và dấu câu."
-    )
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +512,7 @@ def transcribe_file(
     )
     for seg in segments:
         text = seg.text.strip()
-        if text:
+        if text and not _is_hallucination(text):
             result.sentences.append(text)
             result.timings.append((round(seg.start, 2), round(seg.end, 2)))
     return result
