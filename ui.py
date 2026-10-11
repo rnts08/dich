@@ -13,11 +13,13 @@ Just run:  python ui.py
 """
 import json
 import queue
+import re
 import threading
 import tkinter as tk
 import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import List, Optional
 
 import backend
 from backend import (
@@ -62,6 +64,137 @@ YELLOW = "#f9e2af"
 BLUE = "#89b4fa"
 
 CACHE_LABEL = "loaded from cache"
+
+
+# ---------------------------------------------------------------------------
+# Markdown rendering
+# ---------------------------------------------------------------------------
+# The translation pane renders Markdown rather than showing raw markup, so the
+# model is asked to emit it. Tkinter's Text widget has no HTML renderer and
+# pulling in a webview for one pane is not worth the dependency, so a small
+# converter maps Markdown constructs onto Text tags.
+
+MD_TAGS = {
+    "h1": dict(font=("SF Pro Text", 20, "bold"), spacing1=12, spacing3=8),
+    "h2": dict(font=("SF Pro Text", 16, "bold"), spacing1=10, spacing3=6),
+    "h3": dict(font=("SF Pro Text", 14, "bold"), spacing1=8, spacing3=4),
+    "bold": dict(font=("SF Pro Text", 12, "bold")),
+    "italic": dict(font=("SF Pro Text", 12, "italic")),
+    "bold_italic": dict(font=("SF Pro Text", 12, "bold italic")),
+    "code": dict(font=("SF Mono", 11), background=SURFACE),
+    "code_block": dict(font=("SF Mono", 11), background=SURFACE, spacing1=6, spacing3=6),
+    "list": dict(spacing1=2, spacing3=2, lmargin1=18, lmargin2=18),
+    "quote": dict(foreground=SUBTLE, lmargin1=18, lmargin2=18, spacing1=6),
+}
+
+_MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+_MD_FENCE = re.compile(r"^\s*```")
+_MD_BULLET = re.compile(r"^\s*[-*+]\s+(.*)$")
+_MD_NUMBERED = re.compile(r"^\s*\d+[.)]\s+(.*)$")
+_MD_QUOTE = re.compile(r"^\s*>\s?(.*)$")
+_MD_INLINE = re.compile(
+    r"(\*\*.+?\*\*|__.+?__|\*[^*]+?\*|_[^_]+?_|`[^`]+?`)"
+)
+
+
+def render_markdown(text: str, widget: tk.Text) -> None:
+    """
+    Render Markdown into a Tk Text widget using tags.
+
+    Falls back to inserting the text verbatim if anything goes wrong, so the
+    pane never ends up empty because of a parsing edge case.
+    """
+    try:
+        _render_markdown(text, widget)
+    except Exception:  # noqa: BLE001 - the text is more important than the formatting
+        widget.insert(tk.END, text)
+
+
+def _render_markdown(text: str, widget: tk.Text) -> None:
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        if _MD_FENCE.match(line):
+            i = _render_code_block(lines, i + 1, widget)
+            continue
+
+        heading = _MD_HEADING.match(line)
+        if heading:
+            level = min(len(heading.group(1)), 3)
+            _insert_inline(widget, heading.group(2), f"h{level}")
+            widget.insert(tk.END, "\n")
+            i += 1
+            continue
+
+        if line.strip() == "":
+            widget.insert(tk.END, "\n")
+            i += 1
+            continue
+
+        bullet = _MD_BULLET.match(line)
+        if bullet:
+            _insert_inline(widget, "•  " + bullet.group(1), "list")
+            widget.insert(tk.END, "\n")
+            i += 1
+            continue
+
+        numbered = _MD_NUMBERED.match(line)
+        if numbered:
+            _insert_inline(widget, numbered.group(1), "list")
+            widget.insert(tk.END, "\n")
+            i += 1
+            continue
+
+        quote = _MD_QUOTE.match(line)
+        if quote:
+            _insert_inline(widget, "│ " + quote.group(1), "quote")
+            widget.insert(tk.END, "\n")
+            i += 1
+            continue
+
+        _insert_inline(widget, line, None)
+        widget.insert(tk.END, "\n")
+        i += 1
+
+
+def _render_code_block(lines: list, start: int, widget: tk.Text) -> int:
+    """Render a fenced code block; returns the index after the closing fence."""
+    body = []
+    i = start
+    while i < len(lines) and not _MD_FENCE.match(lines[i]):
+        body.append(lines[i])
+        i += 1
+    if body:
+        widget.insert(tk.END, "\n".join(body) + "\n", "code_block")
+    return i + 1
+
+
+def _insert_inline(widget: tk.Text, text: str, block_tag: str | None) -> None:
+    """Insert a line, applying inline Markdown emphasis to the matching spans."""
+    for piece in _MD_INLINE.split(text):
+        if not piece:
+            continue
+        if piece.startswith("**") and piece.endswith("**") and len(piece) > 4:
+            tag = "bold"
+            piece = piece[2:-2]
+        elif piece.startswith("__") and piece.endswith("__") and len(piece) > 4:
+            tag = "bold"
+            piece = piece[2:-2]
+        elif piece.startswith(("*", "_")) and piece.endswith(piece[0]) and len(piece) > 2:
+            tag = "italic"
+            piece = piece[1:-1]
+        elif piece.startswith("`") and piece.endswith("`") and len(piece) > 2:
+            tag = "code"
+            piece = piece[1:-1]
+        else:
+            tag = None
+
+        if block_tag and tag:
+            widget.insert(tk.END, piece, (block_tag, tag))
+        else:
+            widget.insert(tk.END, piece, tag or block_tag)
 
 
 # ---------------------------------------------------------------------------
@@ -115,11 +248,13 @@ class Worker:
 # Text pane with placeholder support
 # ---------------------------------------------------------------------------
 class TextPane(ttk.Frame):
-    def __init__(self, master, label: str, editable: bool = True, placeholder: str = ""):
+    def __init__(self, master, label: str, editable: bool = True,
+                 placeholder: str = "", markdown: bool = False):
         super().__init__(master)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         self.placeholder = placeholder
+        self.markdown = markdown
 
         ttk.Label(self, text=label).grid(row=0, column=0, sticky="w", pady=(0, 4))
 
@@ -135,12 +270,21 @@ class TextPane(ttk.Frame):
         scrollbar.grid(row=1, column=1, sticky="ns")
         self.text.configure(yscrollcommand=scrollbar.set)
 
+        if markdown:
+            self._configure_markdown_tags()
+
         self.editable = editable
         self._has_placeholder = False
+        self._markdown_source = ""
         if not editable and placeholder:
             self._show_placeholder()
             self.text.bind("<FocusIn>", self._on_focus_in)
             self.text.bind("<Button-1>", self._on_focus_in)
+
+    def _configure_markdown_tags(self):
+        """Register the formatting tags the Markdown renderer applies."""
+        for name, options in MD_TAGS.items():
+            self.text.tag_configure(name, **options)
 
     # -- content ----------------------------------------------------------
     def _show_placeholder(self):
@@ -163,12 +307,26 @@ class TextPane(ttk.Frame):
         return self._has_placeholder
 
     def set(self, content: str):
+        self._markdown_source = content
         self.text.configure(state="normal")
         self.text.delete("1.0", tk.END)
-        self.text.insert("1.0", content)
+        if self.markdown:
+            render_markdown(content, self.text)
+        else:
+            self.text.insert("1.0", content)
         if not self.editable:
             self.text.configure(state="disabled")
         self._has_placeholder = False
+
+    def markdown_source(self) -> str:
+        """
+        Return the pane content as Markdown source.
+
+        A Markdown pane renders formatted text into the widget, so the raw
+        Markdown is kept alongside it: saving, copying and re-translating all
+        need the source, not the decorated copy.
+        """
+        return self._markdown_source
 
     def get(self) -> str:
         """Return the pane content, treating a visible placeholder as empty."""
@@ -189,6 +347,15 @@ class TextPane(ttk.Frame):
 # Status footer: progress bar + live throughput
 # ---------------------------------------------------------------------------
 class StatusBar(ttk.Frame):
+    """
+    Footer: a progress bar plus live throughput text.
+
+    Two bar modes, because not every phase has a measurable total:
+        determinate - 0-100%, used for translation batches
+        indeterminate - a pulsing bar, used for model loading, transcribing and
+                        any other phase whose length is unknown up front
+    """
+
     def __init__(self, master):
         super().__init__(master)
         self.columnconfigure(0, weight=1)
@@ -207,22 +374,40 @@ class StatusBar(ttk.Frame):
         )
         self.hint.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
+    # -- determinate -----------------------------------------------------
     def set_progress(self, percent: int):
+        self.set_determinate()
         self.progress["value"] = max(0, min(100, percent))
-
-    def reset(self):
-        self.progress["value"] = 0
-        self.stats.configure(text="idle")
 
     def update(self, percent: int, stats: str):
         self.set_progress(percent)
         self.stats.configure(text=stats)
+
+    # -- indeterminate ---------------------------------------------------
+    def set_busy(self, label: str, hint: str = "", color: str = FG):
+        """Switch to a pulsing bar for work with no known total."""
+        if str(self.progress["mode"]) != "indeterminate":
+            self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+        self.stats.configure(text=label, foreground=color)
+        if hint:
+            self.hint.configure(text=hint)
+
+    def set_determinate(self):
+        if str(self.progress["mode"]) != "determinate":
+            self.progress.configure(mode="determinate", maximum=100)
+            self.progress.stop()
 
     def set_stats(self, stats: str, color: str = FG):
         self.stats.configure(text=stats, foreground=color)
 
     def set_hint(self, text: str):
         self.hint.configure(text=text)
+
+    def reset(self):
+        self.set_determinate()
+        self.progress["value"] = 0
+        self.stats.configure(text="idle")
 
 
 # ---------------------------------------------------------------------------
@@ -279,18 +464,30 @@ class DichApp:
     def _build_widgets(self):
         header = ttk.Frame(self.root)
         header.pack(fill="x", padx=20, pady=(16, 8))
+        header.columnconfigure(2, weight=1)
 
-        titles = ttk.Frame(header)
-        titles.pack(side="left")
-        ttk.Label(titles, text=APP_NAME, style="App.TLabel").pack(anchor="w")
+        # Name, language pair and model status all on one row, so the vertical
+        # space goes to the panes instead of a stacked subtitle.
+        ttk.Label(header, text=APP_NAME, style="App.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Label(
-            titles, text=f"{APP_TAGLINE} · v{VERSION}", style="Tagline.TLabel"
-        ).pack(anchor="w")
+            header, text=f"{APP_TAGLINE} · v{VERSION}",
+            style="Tagline.TLabel",
+        ).grid(row=0, column=1, sticky="w", padx=(12, 0), pady=(6, 0))
 
-        self.health_dot = ttk.Label(header, text="●", style="Status.TLabel", foreground=YELLOW)
-        self.health_dot.pack(side="right")
-        self.health_text = ttk.Label(header, text="checking…", style="Tagline.TLabel")
-        self.health_text.pack(side="right", padx=(0, 6))
+        status_box = ttk.Frame(header)
+        status_box.grid(row=0, column=3, sticky="e")
+        self.health_dot = ttk.Label(
+            status_box, text="●", style="Status.TLabel", foreground=YELLOW
+        )
+        self.health_dot.pack(side="left")
+        self.health_text = ttk.Label(status_box, text="checking…", style="Tagline.TLabel")
+        self.health_text.pack(side="left", padx=(4, 0))
+        self.model_label = ttk.Label(
+            status_box, text="", style="Tagline.TLabel", foreground=SUBTLE
+        )
+        self.model_label.pack(side="left", padx=(8, 0))
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=12, pady=(4, 8))
@@ -336,7 +533,8 @@ class DichApp:
         self.source_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         self.target_pane = TextPane(
-            body, f"Translation — {TARGET_LANGUAGE}", editable=False, placeholder="Translation appears here"
+            body, f"Translation — {TARGET_LANGUAGE}", editable=False,
+            placeholder="Translation appears here", markdown=True,
         )
         self.target_pane.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
@@ -350,19 +548,11 @@ class DichApp:
         self.mic_button = ttk.Button(toolbar, text="●  Record", command=self.toggle_recording)
         self.mic_button.pack(side="left", padx=(0, 8))
         ttk.Button(toolbar, text="Open Audio…", command=self.open_audio).pack(side="left", padx=(0, 8))
-        ttk.Button(toolbar, text="Refine", command=self.refine_speech).pack(side="left")
+        ttk.Button(toolbar, text="Refine", command=self.refine_speech).pack(side="left", padx=(0, 8))
         ttk.Button(toolbar, text="Clear", command=self.clear_speech).pack(side="left")
 
         self.mic_status = ttk.Label(toolbar, text="idle", style="Tagline.TLabel")
         self.mic_status.pack(side="left", padx=(14, 0))
-
-        ttk.Label(
-            tab,
-            text=f"Speak {SOURCE_LANGUAGE}, or open an audio recording. The transcript "
-                 f"fills in on the left; the {TARGET_LANGUAGE} translation on the right "
-                 f"is re-translated as more speech gives it context.",
-            style="Tagline.TLabel",
-        ).pack(fill="x", padx=12)
 
         body = ttk.Frame(tab)
         body.pack(fill="both", expand=True, padx=12, pady=10)
@@ -376,7 +566,8 @@ class DichApp:
         self.transcript_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         self.speech_translation_pane = TextPane(
-            body, f"Translation — {TARGET_LANGUAGE}", editable=False, placeholder="Translation appears here"
+            body, f"Translation — {TARGET_LANGUAGE}", editable=False,
+            placeholder="Translation appears here", markdown=True,
         )
         self.speech_translation_pane.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
@@ -587,10 +778,14 @@ class DichApp:
         self.worker.run(is_server_ready, on_success=self._on_server_checked)
 
     def _on_server_checked(self, info: dict):
+        model_short = (info.get("model") or "").split("/")[-1]
+        self.model_label.configure(text=model_short)
+
         if info.get("ready"):
             self.health_dot.configure(foreground=GREEN)
             self.health_text.configure(text="ready")
-            self.status.set_stats("ready", GREEN)
+            self.model_label.configure(text=model_short, foreground=GREEN)
+            self.status.set_stats(f"{model_short} · ready", GREEN)
             if self.status.hint.cget("text").startswith("Loading"):
                 self.status.set_hint("")
             # Nothing is in flight, so a slow poll is enough.
@@ -600,17 +795,22 @@ class DichApp:
         if info.get("loading"):
             self.health_dot.configure(foreground=YELLOW)
             self.health_text.configure(text="loading…")
-            self.status.set_stats("loading model…", YELLOW)
-            self.status.set_hint(f"{info.get('model', '').split('/')[-1]} — first load takes a few seconds")
+            self.model_label.configure(text="", foreground=SUBTLE)
+            self.status.set_busy(
+                f"loading {model_short}",
+                hint=f"{model_short} — first load takes a few seconds",
+                color=YELLOW,
+            )
             # Poll quickly so the dot turns green the moment it is ready.
             self.root.after(600, self._check_server)
             return
 
         self.health_dot.configure(foreground=RED)
         self.health_text.configure(text="not loaded")
+        self.model_label.configure(text="", foreground=SUBTLE)
         self.status.set_stats("not loaded", RED)
         self.status.set_hint(
-            f"{info.get('model', '')} · loads on first translation "
+            f"{model_short} · loads on first translation "
             f"(or enable 'load model on startup' in Settings)"
         )
         self.root.after(15000, self._check_server)
@@ -645,9 +845,7 @@ class DichApp:
             return
 
         self.root.config(cursor="watch")
-        self.status.set_stats("translating…")
-        self.status.set_progress(0)
-        self.status.set_hint("")
+        self.status.set_busy("translating…")
         self.target_pane.set("")
 
         def on_progress(p: Progress):
@@ -700,7 +898,7 @@ class DichApp:
         self._show_error("Translation failed", exc, tb)
 
     def save_translation(self):
-        translation = self.target_pane.get()
+        translation = self.target_pane.markdown_source() or self.target_pane.get()
         if not translation or translation == self.target_pane.placeholder:
             messagebox.showwarning("Nothing to save", "Translate something first.")
             return
@@ -747,14 +945,18 @@ class DichApp:
 
         self.audio_path = Path(path)
         self.mic_status.configure(text="transcribing…")
-        self.status.set_stats("decoding audio…")
+        self.status.set_busy(
+            "transcribing audio",
+            hint=f"{Path(path).name} — speech model may download on first use",
+        )
         self._new_translator()
         self.transcript_pane.set("")
         self.speech_translation_pane.set("")
 
         self.worker.run(
-            speech_engine.transcribe_file, path,
-            speech_engine.FILE_MODEL,
+            speech_engine.transcribe_file,
+            path,
+            speech_engine.FILE_MODEL if hasattr(speech_engine, "FILE_MODEL") else speech_engine.LIVE_MODEL,
             on_success=self._on_audio_transcribed,
             on_error=self._on_speech_error,
         )
@@ -771,27 +973,56 @@ class DichApp:
     def _stream_sentences(self, sentences):
         """Translate sentences one at a time, letting context accumulate."""
         if not sentences:
+            # Nothing further will arrive, so the trailing partial block gets
+            # its own refinement pass instead of staying provisional.
+            self.worker.run(
+                self.translator.finalize,
+                on_success=lambda ok: self._on_finalized(ok),
+                on_error=lambda exc, tb: None,
+            )
             return
         sentence = sentences.pop(0)
 
         def done(_ignored=None):
             self.speech_translation_pane.set(self.translator.render_refined())
+            stats = self.translator.stats()
             self.status.set_stats(
-                f"{self.translator.stats()['refined']} refined · "
-                f"{self.translator.stats()['provisional']} provisional"
+                f"{stats['refined']} refined · {stats['provisional']} provisional"
             )
             if sentences:
                 self.root.after(0, lambda: self._stream_sentences(sentences))
             else:
-                self.status.set_stats(
-                    f"done · {self.translator.stats()['refined']} refined", GREEN
-                )
+                self._stream_sentences(sentences)  # triggers finalize
 
         def failed(exc, tb):
             self.speech_translation_pane.append(f"[failed: {exc}]\n")
             print(tb)
             if sentences:
                 self.root.after(0, lambda: self._stream_sentences(sentences))
+            else:
+                self._stream_sentences(sentences)
+
+        self.worker.run(
+            self.translator.add, sentence,
+            on_success=done, on_error=failed,
+        )
+
+    def _on_finalized(self, ok):
+        self.speech_translation_pane.set(self.translator.render_refined())
+        stats = self.translator.stats()
+        if ok:
+            self.status.set_stats(
+                f"done · {stats['refined']} refined of {stats['utterances']}", GREEN
+            )
+        elif stats["provisional"]:
+            self.status.set_stats(
+                f"done · {stats['refined']} refined, {stats['provisional']} provisional",
+                YELLOW,
+            )
+        else:
+            self.status.set_stats(
+                f"done · {stats['refined']} refined", GREEN
+            )
 
         self.worker.run(
             self.translator.add, sentence,
@@ -799,11 +1030,11 @@ class DichApp:
         )
 
     def refine_speech(self):
-        """Force a whole-passage re-translation of everything so far."""
+        """Re-translate the pending utterances as one passage."""
         if self.translator is None or not self.translator.transcript:
             messagebox.showinfo("Nothing to refine", "Record or open some audio first.")
             return
-        self.status.set_stats("refining…")
+        self.status.set_busy("refining…")
         self.worker.run(
             self.translator.refine,
             on_success=lambda ok: self._on_refined(ok),
@@ -814,7 +1045,9 @@ class DichApp:
         if ok:
             self.speech_translation_pane.set(self.translator.render_refined())
             stats = self.translator.stats()
-            self.status.set_stats(f"{stats['refined']} refined of {stats['utterances']}", GREEN)
+            self.status.set_stats(
+                f"{stats['refined']} refined of {stats['utterances']}", GREEN
+            )
         else:
             self.status.set_stats("refine failed", RED)
 
@@ -846,7 +1079,11 @@ class DichApp:
         self._mic_opening = True
         self.mic_button.configure(state="disabled")
         self.mic_status.configure(text="opening…")
-        self.status.set_stats("opening microphone…")
+        self.status.set_busy(
+            "opening microphone",
+            hint="granting microphone access in System Settings if this stays here",
+            color=YELLOW,
+        )
         self.root.config(cursor="watch")
 
         self.worker.run(
