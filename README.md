@@ -11,6 +11,32 @@ Vietnamese → English translator, running a local MLX model.
 The model loads in-process on the first translation and stays resident, so there
 is no separate server process to start.
 
+## Where things live
+
+Everything the app owns sits under `~/.config/dich`:
+
+```
+~/.config/dich/
+├── config.json    model, languages, microphone, refine cadence
+└── models/        every downloaded model
+    ├── models--mlx-community--translategemma-4b-it-4bit/
+    ├── models--mlx-community--Qwen3-4B-Instruct-2507-4bit/
+    ├── models--mobiuslabsgmbh--faster-whisper-large-v3-turbo/
+    └── models--Systran--faster-whisper-{tiny,small,medium}/
+```
+
+The model cache is redirected there at import time via `HF_HUB_CACHE`, before
+HuggingFace is loaded, because that library reads the variables once at import.
+An existing `config.json` sitting beside the code is copied across on first run
+so a configured install keeps its settings.
+
+Both were verified to load with the network disabled, so a second run does not
+re-download. Set `DICH_HOME` to relocate them, which is also how the tests
+relocate them.
+
+To free space, delete a directory under `models/` — it re-downloads the next
+time that model is asked for.
+
 ## Files
 
 | Path | Purpose |
