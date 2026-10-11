@@ -58,8 +58,8 @@ Two ways in:
 - **Open Audio…** — transcribes an audio file (`mp3`, `wav`, `m4a`, …). This uses
   `large-v3-turbo`, which is far more accurate in Vietnamese than the live model
   but runs at about 3.6× realtime, so a 38-minute recording takes roughly 14
-  minutes. The live mic uses `medium` by default, which trails the speaker by
-  about one window but reads Vietnamese correctly.
+  minutes. The live mic uses `small` by default, which keeps up with a speaker
+  at a 2-second window.
 
 The translation is **not** fixed on first pass. Each utterance is translated with
 the preceding ones supplied as conversation turns, so honorifics and pronouns
@@ -82,22 +82,42 @@ In Settings → Microphone:
 | **Input device** | Which microphone. *System default* follows macOS. |
 | **Speech model** | `tiny` → `large-v3-turbo`. Only runs while recording. |
 | **Refine every** | Utterances between block re-translations. |
+| **Transcription window** | Seconds of audio per transcription. |
+| **Buffer ceiling** | Seconds of audio held before the oldest is dropped. |
 
-The speech model defaults to `medium`, measured for Vietnamese on an M5:
+The speech model defaults to `small`, measured for Vietnamese on an M5:
+
 
 | Model | Realtime | Accuracy |
 |---|---|---|
 | `tiny` | 16× | very rough |
 | `base` | 8× | rough |
-| `small` | 6.4× | mis-hears names ("Tũ" for "Tú") |
-| `medium` | 2.2× | good (default) |
-| `large-v3-turbo` | 0.3× — 3.6× slower than the speaker | best |
-trails the speaker by roughly one 10-second window, which is still
-semi-realtime; drop to `small` if latency matters more than correctness.
+| `small` | ~2× at 2s windows | keeps up (default) |
+| `medium` | 0.49× at 2s / 2.2× at 10s | better proper nouns |
+| `large-v3-turbo` | slowest | best |
+`small` is the default because it keeps up at a 2-second window; choose
+`medium` or `large-v3-turbo` when a name being heard correctly matters more
+than latency.
 
-Realtime is quoted for 10-second windows. Every `transcribe()` call carries
-fixed overhead, so short windows multiply it: the same `medium` model measured
-0.84× at 3-second windows and 2.2× at 10-second ones.
+Realtime depends on the window as much as on the model, since every
+`transcribe()` call carries fixed overhead:
+
+| | 2s window | 10s window |
+|---|---|---|
+| `small` | ~2× | ~6× |
+| `medium` | 0.49× | 2.2× |
+
+### Latency and the window
+
+The status bar counts down to the next transcript: `listening… · next transcript
+in 1.3s`. With a 2-second window the first words appear **1.2s after speech
+starts**; at the old 10-second window they took 10s, which read as the app doing
+nothing at all.
+
+A window that produces text fast does not have to keep up -- the buffer holds
+the audio and it catches up during a pause. That is what the buffer ceiling is
+for: raise it to let a slower model catch up, or to hold a long recording for
+re-transcribing. `small` at 2s keeps up (1.3x), so the countdown stays short.
 and keeps an unsaved selection.
 
 If a configured device disappears — unplugged, or device order changed — the
@@ -225,3 +245,12 @@ future debugger needs.
 ```bash
 pip install mlx-lm pypdf python-docx striprtf markdown
 ```
+
+## Notes
+
+`mlx-audio` 0.5.8 is installed on this machine as a `uv` tool. Its STT cannot
+run `mlx-community/whisper-large-v3-turbo` -- it raises `Processor not found.
+Make sure the model was loaded with a HuggingFace processor`, including from its
+own CLI -- so it is not used. If it can be made to work it would move
+transcription onto the GPU, which is the real answer to the latency tradeoff
+above rather than trading accuracy for it.
