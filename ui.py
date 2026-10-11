@@ -801,65 +801,103 @@ class DichApp:
                  "the cost of more model calls.",
             style="Faint.TLabel",
         ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        # --- listening ------------------------------------------------------
+        self._section(form, "Listening", row=18)
+
+        ttk.Label(form, text="Transcription window").grid(
+            row=19, column=0, sticky="w", pady=6
+        )
+        self.window_var = tk.DoubleVar(
+            value=float(backend.CONFIG.get("window_seconds", speech_engine.WINDOW_SECONDS))
+        )
+        ttk.Spinbox(
+            form, from_=0.5, to=30.0, increment=0.5,
+            textvariable=self.window_var, width=6,
+        ).grid(row=19, column=1, sticky="w", pady=6)
+        ttk.Label(
+            form,
+            text="Seconds of audio per transcription. Short means the first words "
+                 "appear sooner; each call carries fixed overhead, so short windows "
+                 "also lower the realtime factor.",
+            style="Faint.TLabel",
+        ).grid(row=20, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        ttk.Label(form, text="Buffer ceiling").grid(
+            row=21, column=0, sticky="w", pady=6
+        )
+        self.buffer_var = tk.IntVar(
+            value=int(backend.CONFIG.get("buffer_max_seconds", speech_engine.BUFFER_MAX_SECONDS))
+        )
+        ttk.Spinbox(
+            form, from_=30, to=6000, increment=30,
+            textvariable=self.buffer_var, width=6,
+        ).grid(row=21, column=1, sticky="w", pady=6)
+        ttk.Label(
+            form,
+            text="Seconds of audio to hold before the oldest is dropped. 600s is "
+                 "about 38 MB. Raise it to let a slower model catch up, or to keep "
+                 "a long recording for re-transcribing.",
+            style="Faint.TLabel",
+        ).grid(row=22, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
         # --- cache ----------------------------------------------------------
-        self._section(form, "Translation cache", row=18)
+        self._section(form, "Translation cache", row=24)
 
         self.cache_status = ttk.Label(form, text=self._cache_summary(), style="Faint.TLabel")
-        self.cache_status.grid(row=19, column=0, columnspan=2, sticky="w", pady=4)
+        self.cache_status.grid(row=25, column=0, columnspan=2, sticky="w", pady=4)
 
         theme.RoundedButton(
             form, "Clear cache", command=self.clear_cache, variant="danger",
             background=theme.SURFACE0,
-        ).grid(row=19, column=2, padx=theme.SPACE_2)
+        ).grid(row=25, column=2, padx=theme.SPACE_2)
 
         # --- debug: google reference ---------------------------------------
-        self._section(form, "Debug", row=20)
+        self._section(form, "Debug", row=27)
 
         ttk.Label(
             form,
             text="Google Translate reference for verifying output.",
             style="Faint.TLabel",
-        ).grid(row=21, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ).grid(row=28, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         theme.RoundedButton(
             form, "Run Google reference", command=self.run_reference, variant="ghost",
             background=theme.SURFACE0,
-        ).grid(row=22, column=0, pady=theme.SPACE_1)
+        ).grid(row=29, column=0, pady=theme.SPACE_1)
 
         self.reference_pane = TextPane(
             form, "Google Translate reference", editable=False, placeholder="Reference appears here"
         )
-        self.reference_pane.grid(row=23, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
-        form.rowconfigure(23, weight=1)
+        self.reference_pane.grid(row=30, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        form.rowconfigure(30, weight=1)
         form.columnconfigure(1, weight=1)
 
         # --- about ---------------------------------------------------------
-        self._section(form, "About", row=25)
+        self._section(form, "About", row=32)
 
         ttk.Label(form, text=f"{APP_NAME} v{VERSION}", style="H2.TLabel").grid(
             row=26, column=0, sticky="w", pady=2
         )
         ttk.Label(
             form, text="A local Vietnamese → English translator.", style="Faint.TLabel"
-        ).grid(row=27, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        ).grid(row=34, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
         theme.SectionLabel(form, "© 2026 Tim Bergström").grid(
-            row=28, column=0, sticky="w", pady=2
+            row=35, column=0, sticky="w", pady=2
         )
         ttk.Label(
             form, text="Non-commercial use only. See LICENSE.", style="Faint.TLabel"
-        ).grid(row=29, column=0, sticky="w", pady=(0, 6))
+        ).grid(row=36, column=0, sticky="w", pady=(0, 6))
 
         theme.RoundedButton(
             form, "Home: github.com/rnts08/dich", command=self.open_home,
             variant="ghost", background=theme.SURFACE0,
-        ).grid(row=30, column=0, sticky="w", pady=(0, 8))
+        ).grid(row=37, column=0, sticky="w", pady=(0, 8))
 
         theme.RoundedButton(
             form, "Show licence", command=self.show_licence, variant="quiet",
             background=theme.SURFACE0,
-        ).grid(row=30, column=2, sticky="w")
+        ).grid(row=37, column=2, sticky="w")
 
     # -- helpers ----------------------------------------------------------
     def _section(self, form, title, row):
@@ -932,13 +970,20 @@ class DichApp:
                 if usage["bytes"] > 0 else ""
             )
             self.status.set_memory(label)
-            # Also show it beside the speech tab's own status, since that is
-            # where someone watching a recording looks first.
+            # The countdown is the honest answer to "is anything happening":
+            # with a short window the next transcript should be moments away,
+            # and a countdown that only grows means the transcriber is behind.
             if self.recording:
-                base = "listening…"
-                self.mic_status.configure(
-                    text=f"{base} · {label}" if label else base, foreground=GREEN
-                )
+                next_in = usage.get("next_in", 0.0)
+                if usage["bytes"] > 0 or next_in > 0:
+                    self.mic_status.configure(
+                        text=f"listening… · next transcript in {next_in:.1f}s",
+                        foreground=GREEN,
+                    )
+                    self.status.set_memory(
+                        f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s "
+                        f"· next in {next_in:.1f}s"
+                    )
 
         self.root.after(500, self._poll_memory)
 
@@ -1302,6 +1347,10 @@ class DichApp:
             speech_engine.start_mic_stream,
             model_size=str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL)),
             device_index=backend.CONFIG.get("mic_device_index"),
+            window_seconds=float(backend.CONFIG.get("window_seconds", speech_engine.WINDOW_SECONDS)),
+            buffer_max_seconds=float(
+                backend.CONFIG.get("buffer_max_seconds", speech_engine.BUFFER_MAX_SECONDS)
+            ),
             on_success=self._on_mic_started,
             on_error=self._on_mic_failed,
         )
@@ -1415,6 +1464,8 @@ class DichApp:
             "mic_device_index": self._selected_device(),
             "mic_model": self._selected_mic_model(),
             "refine_every": int(self.refine_var.get()),
+            "window_seconds": float(self.window_var.get()),
+            "buffer_max_seconds": int(self.buffer_var.get()),
         })
 
         try:
@@ -1480,8 +1531,28 @@ def _human(num_bytes: int) -> str:
 
 def main():
     root = tk.Tk()
-    DichApp(root)
+    app = DichApp(root)
+
+    def on_quit():
+        app.recording = False
+        try:
+            import speech_engine
+            speech_engine.stop_mic_stream()
+        except Exception:  # noqa: BLE001 - quitting must not raise
+            pass
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_quit)
     root.mainloop()
+
+    # The semaphore tracker warns at shutdown about objects leaked by the audio
+    # stack. It is noise to the user, and nothing here can be done about it at
+    # this point -- the stream is already closed.
+    try:
+        import multiprocessing.resource_tracker as rt
+        rt.unregister_resource = lambda *a, **k: None
+    except Exception:  # noqa: BLE001 - cosmetic
+        pass
 
 
 if __name__ == "__main__":

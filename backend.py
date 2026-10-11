@@ -26,8 +26,15 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=os.environ.get("DICH_LOG_LEVEL", "WARNING").upper(),
+    format="%(levelname)s:%(name)s:%(message)s",
+)
 logger = logging.getLogger(__name__)
+# HuggingFace and faster-whisper chat at INFO on every request and every file,
+# which buries the app's own output. Quiet unless explicitly asked for.
+for noisy in ("httpx", "httpcore", "huggingface_hub", "faster_whisper", "urllib3"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 # ---------------------------------------------------------------------------
 # Locations - everything the app owns lives under ~/.config/dich
@@ -45,6 +52,9 @@ LEGACY_CONFIG_PATH = Path(__file__).parent / "config.json"
 os.environ.setdefault("HF_HOME", str(CONFIG_ROOT))
 os.environ.setdefault("HF_HUB_CACHE", str(MODELS_DIR))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(MODELS_DIR))
+# HF prints a tqdm bar for its "is the snapshot current" check on every load,
+# which is not logging and therefore not covered by the level below.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 
 def _migrate_legacy_config() -> None:

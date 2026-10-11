@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import threading
 import time
 from collections import deque
@@ -43,20 +44,24 @@ os.environ.setdefault("TRANSFORMERS_CACHE", str(Path(os.environ.get("DICH_HOME",
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-# A longer window matters more than it looks: each transcribe() call carries
-# fixed overhead, so short windows multiply it. Measured on this M5 with the
-# medium model on Vietnamese speech:
-#     3s window  -> 0.84x realtime   (falls behind the speaker)
-#     6s window  -> 1.46x realtime
-#    10s window  -> 2.00x realtime   (keeps up, and yields *more* segments
-#                                     because Whisper sees whole clauses)
-# The cost is latency to the first word, which is the right trade here.
-WINDOW_SECONDS = 10.0
+# A short window is what makes the first words appear quickly. The cost is the
+# realtime factor, because every transcribe() call carries fixed overhead.
+# Measured warm for Vietnamese on this M5:
+#     2.0s window, medium -> 0.49x realtime  (text appears fast, falls behind)
+#     2.0s window, small  -> ~2x realtime    (keeps up)
+#    10.0s window, medium -> 2.2x realtime   (lags the speaker by ~10s)
+# Falling behind is tolerable while the buffer still holds the audio -- it
+# catches up whenever the speaker pauses. Keeping up is why `small` is the
+# live default rather than `medium`.
+WINDOW_SECONDS = 2.0
 SILENCE_SECONDS = 0.8         # trailing silence that ends an utterance
 MIN_SENTENCE_CHARS = 8        # drop tiny fragments ("uh", "vâng" alone)
 # Segments to accumulate before flushing. Whisper returns several segments per
 # window; without a cap, continuous speech parks everything in _pending.
 MAX_SEGMENTS_PER_EMIT = 4
+# How much audio to hold before the oldest is dropped. A transcriber that
+# cannot keep up would otherwise grow this without limit.
+BUFFER_MAX_SECONDS = 600.0
 # The tail share of a window that must be quieter than the window average for
 # the utterance to count as finished.
 TRAILING_SHARE = 0.25
@@ -66,20 +71,24 @@ TRAILING_RATIO = 0.2
 # sample, which catches the quiet-but-warm mic noise a real device produces.
 SILENCE_FLOOR = 0.003
 # Batch/file transcription favours accuracy; live mic keeps up with a speaker.
-# Measured for Vietnamese on an Apple M5 with 10-second windows. Realtime is how
-# much faster than the speaker the model transcribes: above ~1.0 it keeps up,
-# below that the transcript progressively lags behind speech.
+# Realtime depends on the window as much as the model, because every
+# transcribe() call carries fixed overhead. Measured warm for Vietnamese here:
+#     2.0s window, medium -> 0.49x realtime  (text appears fast, falls behind)
+#     2.0s window, small  -> ~2x realtime    (keeps up)
+#    10.0s window, medium -> 2.2x realtime   (lags the speaker by ~10s)
+# Falling behind is tolerable while the buffer holds the audio -- it catches up
+# whenever the speaker pauses -- but keeping up is the default, so `small`.
 FILE_MODEL = "large-v3-turbo"
-LIVE_MODEL = "medium"
+LIVE_MODEL = "small"
 DEFAULT_MODEL = LIVE_MODEL
 
 # (model id, UI label carrying its measured realtime cost)
 SPEECH_MODELS = [
     ("tiny", "tiny — very rough, 16× realtime"),
     ("base", "base — rough, 8× realtime"),
-    ("small", "small — mis-hears names, 6.4× realtime"),
-    ("medium", "medium — good, 2.2× realtime (default)"),
-    ("large-v3-turbo", "large-v3-turbo — best, 0.3× realtime (3.6× slower)"),
+    ("small", "small — keeps up, ~2× realtime (default)"),
+    ("medium", "medium — better names, 0.5× at 2s / 2.2× at 10s"),
+    ("large-v3-turbo", "large-v3-turbo — best, slowest"),
 ]
 SPEECH_MODEL_IDS = [name for name, _label in SPEECH_MODELS]
 
@@ -102,14 +111,23 @@ _END_WORDS = {
 class SpeechEngine:
     """Records from the default microphone and yields completed Vietnamese sentences."""
 
-    def __init__(self, model_size: str = DEFAULT_MODEL, device_index: Optional[int] = None):
+    def __init__(self, model_size: str = DEFAULT_MODEL, device_index: Optional[int] = None,
+                 window_seconds: float = WINDOW_SECONDS,
+                 buffer_max_seconds: float = BUFFER_MAX_SECONDS):
         self.model_size = model_size
         self.device_index = device_index
+        self.window_seconds = max(0.5, float(window_seconds))
+        # The cap stops a transcriber that cannot keep up from growing the
+        # buffer without limit, while leaving enough audio to catch up after a
+        # pause. 600s of mono float32 is roughly 38 MB; the ceiling here allows
+        # the several-hundred-MB case where a backend pass re-reads the audio.
+        self.buffer_max_seconds = max(10.0, float(buffer_max_seconds))
         # Numpy blocks, not a list of Python floats: the audio callback fires
         # ~30x a second and copying through .tolist() then back through
         # np.asarray() costs more than the transcription for a 3s window.
         self._buffer: "deque" = deque()
         self._buffered = 0
+        self._dropped = 0
         self._buffer_lock = threading.Lock()
         self._pending = ""
         self._pending_segments = 0
@@ -130,6 +148,13 @@ class SpeechEngine:
                 mono = np.ascontiguousarray(indata[:, 0])
                 self._buffer.append((mono, len(mono)))
                 self._buffered += len(mono)
+                # Drop the oldest audio once past the cap. A transcriber that
+                # cannot keep up would otherwise grow this without limit.
+                limit = int(self.buffer_max_seconds * SAMPLE_RATE)
+                while self._buffered > limit and len(self._buffer) > 1:
+                    dropped = self._buffer.popleft()
+                    self._buffered -= dropped[1]
+                    self._dropped += dropped[1]
 
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -162,21 +187,24 @@ class SpeechEngine:
     # -- audio capture ----------------------------------------------------
     def buffer_usage(self) -> dict:
         """
-        Memory held by the capture buffer.
+        Memory held by the capture buffer, plus how long until the next window.
 
-        Reports both sample counts and bytes, because the buffer is the only
-        unbounded thing in the audio path: the device pushes audio in
-        continuously while transcription drains it in windows, so if the model
-        falls behind the buffer grows and this is where it shows up first.
+        `next_in` is what the UI counts down from: with a short window the first
+        words should appear within a couple of seconds of speech starting, so
+        anything longer than the window means the transcriber is behind.
         """
         with self._buffer_lock:
             samples = self._buffered
             blocks = len(self._buffer)
+            dropped = self._dropped
         return {
             "samples": samples,
             "seconds": samples / SAMPLE_RATE,
             "bytes": samples * 4,          # float32 mono
             "blocks": blocks,
+            "dropped_seconds": dropped / SAMPLE_RATE,
+            "window_seconds": self.window_seconds,
+            "next_in": max(0.0, self.window_seconds - samples / SAMPLE_RATE),
         }
 
     def _take(self, seconds: float):
@@ -211,7 +239,7 @@ class SpeechEngine:
     # -- transcription ----------------------------------------------------
     def _transcribe_loop(self):
         while not self._stop.is_set():
-            audio = self._take(WINDOW_SECONDS)
+            audio = self._take(self.window_seconds)
             if audio is None:
                 time.sleep(0.05)
                 continue
@@ -260,7 +288,9 @@ class SpeechEngine:
         """
         for seg in segments:
             text = _strip_hallucinations(seg.text.strip())
-            if not text:
+            # A repeated phrase is Whisper's other silence artefact, and the
+            # marker list cannot catch it because the phrase itself is real.
+            if not text or _is_repetition(text):
                 continue
             self._pending = f"{self._pending} {text}".strip()
             self._pending_segments += 1
@@ -376,6 +406,36 @@ def _is_hallucination(text: str) -> bool:
     return any(marker in lowered for marker in _HALLUCINATION_MARKERS)
 
 
+def _is_repetition(text: str) -> bool:
+    """
+    True when the text is the same phrase repeated, which is Whisper's other
+    silence artefact and the one the marker list cannot catch because the
+    phrase itself is not boilerplate.
+
+    Seen live on speaker echo: "Công phí dưỡng, công phí dưỡng, công phí
+    dưỡng..." -- a real phrase, repeated into nonsense. Only flags when a span
+    repeats, since a word naturally recurring in speech is normal.
+    """
+    words = re.findall(r"\w+", text.lower())
+    if len(words) < 6:
+        return False
+    for size in (2, 3, 4, 5):
+        if len(words) < size * 2:
+            continue
+        unit = tuple(words[:size])
+        if len(unit) != len(set(unit)):
+            continue  # "của của của" is a genuine repeat of one word
+        run = 1
+        for start in range(size, len(words) - size + 1, size):
+            if tuple(words[start:start + size]) == unit:
+                run += 1
+            else:
+                break
+        if run >= 3:
+            return True
+    return False
+
+
 def _strip_hallucinations(text: str) -> str:
     """
     Remove hallucinated boilerplate from *within* a sentence.
@@ -463,6 +523,8 @@ def _validate_device(device_index: Optional[int]) -> Optional[int]:
 def start_mic_stream(
     model_size: str = DEFAULT_MODEL,
     device_index: Optional[int] = None,
+    window_seconds: float = WINDOW_SECONDS,
+    buffer_max_seconds: float = BUFFER_MAX_SECONDS,
 ) -> SpeechEngine:
     """
     Open the microphone and begin transcribing.
@@ -470,12 +532,17 @@ def start_mic_stream(
     Args:
         model_size: Whisper model. Use LIVE_MODEL to keep up with a speaker.
         device_index: Microphone to open; None uses the system default.
+        window_seconds: Audio per transcription window. Shorter means the first
+            words appear sooner, at the cost of realtime factor.
+        buffer_max_seconds: Audio to hold before the oldest is dropped.
     """
     global _engine
     if _engine is None:
         _engine = SpeechEngine(
             model_size=model_size,
             device_index=_validate_device(device_index),
+            window_seconds=window_seconds,
+            buffer_max_seconds=buffer_max_seconds,
         )
         _engine.start()
     return _engine
