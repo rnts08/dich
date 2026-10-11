@@ -56,6 +56,20 @@ In Settings → Microphone:
 | **Speech model** | `tiny` → `large-v3-turbo`. Only runs while recording. |
 | **Refine every** | Utterances between block re-translations. |
 
+The speech model defaults to `medium`, measured for Vietnamese on an M5:
+
+| Model | Realtime | Accuracy |
+|---|---|---|
+| `small` | 6.4× | mangles proper nouns ("Tũ" for "Tú") |
+| `medium` | 0.84× at 3s windows, **2.2× at 10s** | reads them correctly |
+| `large-v3-turbo` | ~3.6× slower than realtime | best |
+
+`medium` is the default because a wrong transcript is worse than a lag. It
+trails the speaker by roughly one 10-second window, which is still
+semi-realtime; drop to `small` if latency matters more than correctness. The
+window length is why realtime differs so much between rows of the same model:
+every `transcribe()` call carries fixed overhead, so short windows multiply it.
+
 Resolution shows the actual sample rate, so a device that cannot do 16 kHz is
 visible before it fails. **Rescan** picks up mics plugged in or removed later,
 and keeps an unsaved selection.
@@ -69,6 +83,27 @@ blocks until macOS decides whether to grant microphone permission. In a context
 where the permission prompt cannot appear, that open can block indefinitely, and
 on the UI thread it would freeze the window instead. The button is disabled while
 opening so a double-click cannot open two streams.
+
+### Whisper hallucination on silence
+
+Whisper's known failure mode is to invent tidy boilerplate when given silence or
+noise. Unhandled, feeding pure digital silence through this pipeline produced:
+
+> "Hãy subscribe cho kênh La La School Để không bỏ lỡ những video hấp dẫn."
+
+…repeated for the whole session. Three settings were the cause:
+
+- **`initial_prompt` removed** — the Vietnamese hint was echoed back verbatim
+- **`vad_filter=True`** — without it, near-silent windows are transcribed anyway
+- **`condition_on_previous_text=False`** — when true, a hallucination feeds
+  itself and the same phrase repeats indefinitely
+
+Plus a peak-amplitude floor that skips quiet windows outright, and a marker
+filter that strips boilerplate found *inside* real speech, because Whisper
+splices it into genuine sentences rather than always emitting it separately.
+
+The cost is that a genuinely spoken "cảm ơn các bạn" is dropped too. In this
+domain that phrase is overwhelmingly an artefact, so the trade is deliberate.
 
 ## Versioning and commits
 
