@@ -112,6 +112,33 @@ _MD_QUOTE = re.compile(r"^\s*>\s?(.*)$")
 _MD_INLINE = re.compile(
     r"(\*\*.+?\*\*|__.+?__|\*[^*]+?\*|_[^_]+?_|`[^`]+?`)"
 )
+# HTML tags, in case a model returns them rather than Markdown. Showing "<h1>"
+# as literal text is how the Markdown-input bug first became visible.
+_HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags, converting the common ones to their Markdown form first."""
+    replacements = (
+        (r"<h1[^>]*>", "# "), (r"<h2[^>]*>", "## "), (r"<h3[^>]*>", "### "),
+        (r"</h[1-6]>", "\n"), (r"<strong>", "**"), (r"</strong>", "**"),
+        (r"<b>", "**"), (r"</b>", "**"), (r"<em>", "*"), (r"</em>", "*"),
+        (r"<i>", "*"), (r"</i>", "*"), (r"<code>", "`"), (r"</code>", "`"),
+        (r"<li[^>]*>", "- "), (r"</li>", "\n"), (r"<br\s*/?>", "\n"),
+        (r"<p[^>]*>", "\n"), (r"</p>", "\n"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text)
+    return _HTML_TAG.sub("", text)
+
+
+def _plain(text: str) -> str:
+    """Collapse Markdown source down to plain text for a single-line insertion."""
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"\1", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    return text
 
 
 def render_markdown(text: str, widget: tk.Text) -> None:
@@ -128,6 +155,8 @@ def render_markdown(text: str, widget: tk.Text) -> None:
 
 
 def _render_markdown(text: str, widget: tk.Text) -> None:
+    # A model that returns HTML must not have its tags shown as literal text.
+    text = _strip_html(text)
     lines = text.splitlines()
     i = 0
     while i < len(lines):
@@ -965,25 +994,35 @@ class DichApp:
 
         if speech_engine is not None:
             usage = speech_engine.buffer_usage()
-            label = (
-                f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s"
-                if usage["bytes"] > 0 else ""
-            )
-            self.status.set_memory(label)
-            # The countdown is the honest answer to "is anything happening":
-            # with a short window the next transcript should be moments away,
-            # and a countdown that only grows means the transcriber is behind.
+            behind = usage.get("behind_by", 0.0)
+            dropped = usage.get("dropped_seconds", 0.0)
+
+            # Be honest about being behind rather than showing a countdown of
+            # zero, which reads as "imminent" when nothing is in fact coming.
+            if behind > 0.5:
+                mic_line = f"listening… · {behind:.0f}s behind, catching up"
+                bar_line = (
+                    f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s "
+                    f"· {behind:.0f}s behind"
+                )
+                mic_colour = YELLOW
+            else:
+                mic_line = (
+                    f"listening… · next transcript in "
+                    f"{max(0.0, usage['window_seconds'] - usage['seconds']):.1f}s"
+                )
+                bar_line = (
+                    f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s"
+                )
+                mic_colour = GREEN
+
+            if dropped > 0:
+                mic_line += f" · {dropped:.0f}s dropped"
+                bar_line += f" · {dropped:.0f}s DROPPED — raise the buffer ceiling"
+
+            self.status.set_memory(bar_line)
             if self.recording:
-                next_in = usage.get("next_in", 0.0)
-                if usage["bytes"] > 0 or next_in > 0:
-                    self.mic_status.configure(
-                        text=f"listening… · next transcript in {next_in:.1f}s",
-                        foreground=GREEN,
-                    )
-                    self.status.set_memory(
-                        f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s "
-                        f"· next in {next_in:.1f}s"
-                    )
+                self.mic_status.configure(text=mic_line, foreground=mic_colour)
 
         self.root.after(500, self._poll_memory)
 
@@ -1198,6 +1237,12 @@ class DichApp:
         if not path:
             return
 
+        # Starting a file transcription while the microphone is live would feed
+        # both into the same buffer and clobber the live transcript, so stop
+        # recording first.
+        if self.recording:
+            self.stop_recording()
+
         self.audio_path = Path(path)
         self.mic_status.configure(text="transcribing…")
         self.status.set_busy(
@@ -1398,7 +1443,14 @@ class DichApp:
             pass
 
     def clear_speech(self):
-        self._stop_memory_poll()
+        """
+        Clear both speech panes.
+
+        Keeps the buffer readout while recording, otherwise the countdown
+        disappears from under someone who is still listening.
+        """
+        if not self.recording:
+            self._stop_memory_poll()
         self.transcript_pane.set("")
         self.speech_translation_pane.set("")
 

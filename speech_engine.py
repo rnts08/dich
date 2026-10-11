@@ -187,11 +187,12 @@ class SpeechEngine:
     # -- audio capture ----------------------------------------------------
     def buffer_usage(self) -> dict:
         """
-        Memory held by the capture buffer, plus how long until the next window.
+        Memory held by the capture buffer, plus where it stands against the
+        window.
 
-        `next_in` is what the UI counts down from: with a short window the first
-        words should appear within a couple of seconds of speech starting, so
-        anything longer than the window means the transcriber is behind.
+        `behind_by` is the number the UI should show: it is how far the
+        transcriber trails a live speaker, and a countdown that reads 0.0 while
+        nothing is arriving is worse than saying so.
         """
         with self._buffer_lock:
             samples = self._buffered
@@ -204,7 +205,11 @@ class SpeechEngine:
             "blocks": blocks,
             "dropped_seconds": dropped / SAMPLE_RATE,
             "window_seconds": self.window_seconds,
-            "next_in": max(0.0, self.window_seconds - samples / SAMPLE_RATE),
+            "buffer_max_seconds": self.buffer_max_seconds,
+            # How far the transcriber trails the speaker. Positive means it is
+            # behind; a countdown that reads 0.0 while nothing is arriving is
+            # worse than saying so.
+            "behind_by": max(0.0, samples / SAMPLE_RATE - self.window_seconds),
         }
 
     def _take(self, seconds: float):

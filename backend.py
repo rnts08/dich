@@ -339,10 +339,17 @@ def _read_rtf(file_path: str) -> str:
 
 
 def _read_markdown(file_path: str) -> str:
-    """Read markdown as plain text, preserving structure for the model to mirror."""
-    import markdown
+    """
+    Read a Markdown file as its source text.
+
+    It used to run the file through `markdown.markdown()` to HTML, which meant
+    the model translated HTML while the output pane renders Markdown — so a
+    translated `.md` arrived showing literal `<h1>` and `<strong>` tags. The
+    Markdown source is what the model should see, because that is what the
+    output is asked to mirror.
+    """
     with open(file_path, "r", encoding="utf-8") as f:
-        return markdown.markdown(f.read())
+        return f.read()
 
 
 def _read_text(file_path: str) -> str:

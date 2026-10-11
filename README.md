@@ -60,7 +60,7 @@ pane; the translation appears on the right.
 | PDF | `pypdf` |
 | DOCX / DOCM / DOC | `python-docx`, plus macOS `textutil` for legacy `.doc` |
 | RTF | `striprtf` |
-| Markdown | `markdown` |
+| Markdown | read as source text |
 | TXT | direct |
 
 Supported extensions: `txt md markdown pdf docx docm doc rtf`.
@@ -282,12 +282,13 @@ future debugger needs.
 ## Dependencies
 
 ```bash
-pip install mlx-lm httpx pypdf python-docx striprtf markdown
+pip install mlx-lm httpx pypdf python-docx striprtf
 # for speech only:
-pip install sounddevice faster-whisper av
+pip install sounddevice faster-whisper av numpy
 ```
 
-`tkinter` ships with Python.
+`tkinter` ships with Python. `PyPDF2` is accepted as a fallback if `pypdf` is
+absent.
 
 ## Notes
 
