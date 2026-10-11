@@ -78,6 +78,28 @@ If a configured device disappears — unplugged, or device order changed — the
 engine falls back to the system default and logs why, rather than dying with a
 PortAudio error.
 
+### Buffer memory
+
+The status bar shows how much audio is buffered while listening, as
+`buffer 2.7 MB · 45.0s`, and the speech tab shows the same figure beside its
+own status. Opening a file shows the buffer for that decode too.
+
+It is worth watching because the capture buffer is the only unbounded thing in
+the audio path: the device pushes audio in continuously while transcription
+drains it one window at a time. A healthy pipeline produces a sawtooth, climbing
+to about one window and then dropping when that window is transcribed:
+
+```
+t= 2.2s  buffer= 2.0s  125.0 KB
+t= 8.3s  buffer= 8.5s  531.2 KB
+t=10.4s  buffer= 0.5s   31.2 KB    <- 10s window drained
+t=18.6s  buffer= 8.5s  531.2 KB
+```
+
+If the model cannot keep up, the sawtooth becomes a ramp and the number grows
+without limit — which is what this readout is for. `large-v3-turbo` at 0.3×
+realtime is exactly that case, so expect it to climb.
+
 Recording opens the microphone off the UI thread, because `sd.InputStream()`
 blocks until macOS decides whether to grant microphone permission. In a context
 where the permission prompt cannot appear, that open can block indefinitely, and
