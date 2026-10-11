@@ -32,7 +32,8 @@ Two ways in:
 - **Open Audio…** — transcribes an audio file (`mp3`, `wav`, `m4a`, …). This uses
   `large-v3-turbo`, which is far more accurate in Vietnamese than the live model
   but runs at about 3.6× realtime, so a 38-minute recording takes roughly 14
-  minutes. The live mic uses `small` (~16× realtime) so it can keep up.
+  minutes. The live mic uses `medium` by default, which trails the speaker by
+  about one window but reads Vietnamese correctly.
 
 The translation is **not** fixed on first pass. Each utterance is translated with
 the preceding ones supplied as conversation turns, so honorifics and pronouns
@@ -60,18 +61,17 @@ The speech model defaults to `medium`, measured for Vietnamese on an M5:
 
 | Model | Realtime | Accuracy |
 |---|---|---|
-| `small` | 6.4× | mangles proper nouns ("Tũ" for "Tú") |
-| `medium` | 0.84× at 3s windows, **2.2× at 10s** | reads them correctly |
-| `large-v3-turbo` | ~3.6× slower than realtime | best |
-
-`medium` is the default because a wrong transcript is worse than a lag. It
+| `tiny` | 16× | very rough |
+| `base` | 8× | rough |
+| `small` | 6.4× | mis-hears names ("Tũ" for "Tú") |
+| `medium` | 2.2× | good (default) |
+| `large-v3-turbo` | 0.3× — 3.6× slower than the speaker | best |
 trails the speaker by roughly one 10-second window, which is still
-semi-realtime; drop to `small` if latency matters more than correctness. The
-window length is why realtime differs so much between rows of the same model:
-every `transcribe()` call carries fixed overhead, so short windows multiply it.
+semi-realtime; drop to `small` if latency matters more than correctness.
 
-Resolution shows the actual sample rate, so a device that cannot do 16 kHz is
-visible before it fails. **Rescan** picks up mics plugged in or removed later,
+Realtime is quoted for 10-second windows. Every `transcribe()` call carries
+fixed overhead, so short windows multiply it: the same `medium` model measured
+0.84× at 3-second windows and 2.2× at 10-second ones.
 and keeps an unsaved selection.
 
 If a configured device disappears — unplugged, or device order changed — the
@@ -104,6 +104,16 @@ splices it into genuine sentences rather than always emitting it separately.
 
 The cost is that a genuinely spoken "cảm ơn các bạn" is dropped too. In this
 domain that phrase is overwhelmingly an artefact, so the trade is deliberate.
+
+## Licence
+
+Non-commercial. © 2026 Tim Bergström. See [LICENCE](LICENCE) for the full terms;
+the summary is in Settings → About, with a link to the project home at
+<https://github.com/rnts08/dich>.
+
+Third-party models and libraries invoked at runtime — mlx-lm, faster-whisper,
+and whatever Hugging Face publishes — keep their own licences, which this
+project does not grant. Several of those restrict commercial use too.
 
 ## Versioning and commits
 
