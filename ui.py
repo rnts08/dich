@@ -22,6 +22,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import List, Optional
 
 import backend
+import theme
 from backend import (
     CONFIG_PATH,
     SOURCE_LANGUAGE,
@@ -41,7 +42,6 @@ except ImportError:  # pragma: no cover
     speech_engine = None
 
 APP_NAME = "Dịch"
-APP_NAME = "Dịch"
 APP_TAGLINE = "Vietnamese → English translator"
 VERSION = backend.VERSION
 SUPPORTED_EXTS = [".txt", ".md", ".markdown", ".pdf", ".docx", ".docm", ".doc", ".rtf"]
@@ -53,17 +53,33 @@ FILE_TYPES = [
     ("RTF", "*.rtf"),
     ("All files", "*.*"),
 ]
+AUDIO_TYPES = [
+    ("Audio files", "*.mp3 *.wav *.m4a *.ogg *.flac *.aac"),
+    ("All files", "*.*"),
+]
 
-BG = "#1e1e2e"
-SURFACE = "#313244"
-FG = "#cdd6f4"
-SUBTLE = "#6c7086"
-GREEN = "#a6e3a1"
-RED = "#f38ba8"
-YELLOW = "#f9e2af"
-BLUE = "#89b4fa"
-
+# Aliases so the widget code reads plainly. Values come from the theme, so a
+# palette change happens in one place rather than in both modules.
+BG = theme.BASE
+SURFACE = theme.SURFACE0
+FG = theme.TEXT
+SUBTLE = theme.OVERLAY
+GREEN = theme.GREEN
+RED = theme.RED
+YELLOW = theme.YELLOW
+BLUE = theme.BLUE
 CACHE_LABEL = "loaded from cache"
+VERSION = backend.VERSION
+SUPPORTED_EXTS = [".txt", ".md", ".markdown", ".pdf", ".docx", ".docm", ".doc", ".rtf"]
+FILE_TYPES = [
+    ("All supported files", " ".join(f"*{e}" for e in SUPPORTED_EXTS)),
+    ("Plain text / Markdown", "*.txt *.md *.markdown"),
+    ("PDF", "*.pdf"),
+    ("Word", "*.docx *.docm *.doc"),
+    ("RTF", "*.rtf"),
+    ("All files", "*.*"),
+]
+
 
 
 # ---------------------------------------------------------------------------
@@ -74,18 +90,7 @@ CACHE_LABEL = "loaded from cache"
 # pulling in a webview for one pane is not worth the dependency, so a small
 # converter maps Markdown constructs onto Text tags.
 
-MD_TAGS = {
-    "h1": dict(font=("SF Pro Text", 20, "bold"), spacing1=12, spacing3=8),
-    "h2": dict(font=("SF Pro Text", 16, "bold"), spacing1=10, spacing3=6),
-    "h3": dict(font=("SF Pro Text", 14, "bold"), spacing1=8, spacing3=4),
-    "bold": dict(font=("SF Pro Text", 12, "bold")),
-    "italic": dict(font=("SF Pro Text", 12, "italic")),
-    "bold_italic": dict(font=("SF Pro Text", 12, "bold italic")),
-    "code": dict(font=("SF Mono", 11), background=SURFACE),
-    "code_block": dict(font=("SF Mono", 11), background=SURFACE, spacing1=6, spacing3=6),
-    "list": dict(spacing1=2, spacing3=2, lmargin1=18, lmargin2=18),
-    "quote": dict(foreground=SUBTLE, lmargin1=18, lmargin2=18, spacing1=6),
-}
+MD_TAGS = theme.MD_TAGS
 
 _MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _MD_FENCE = re.compile(r"^\s*```")
@@ -256,12 +261,13 @@ class TextPane(ttk.Frame):
         self.placeholder = placeholder
         self.markdown = markdown
 
-        ttk.Label(self, text=label).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(self, text=label).grid(row=0, column=0, sticky="w",
+                                        pady=(0, theme.SPACE_1))
 
         self.text = tk.Text(
             self, wrap="word", bd=0, relief="flat",
             bg=SURFACE, fg=FG, insertbackground=FG,
-            font=("SF Pro Text", 12), padx=10, pady=8,
+            font=(theme.FONT_FAMILY, 12), padx=theme.SPACE_3, pady=theme.SPACE_2,
             state="normal" if editable else "disabled",
         )
         self.text.grid(row=1, column=0, sticky="nsew")
@@ -416,6 +422,7 @@ class StatusBar(ttk.Frame):
 class DichApp:
     def __init__(self, root: tk.Tk):
         self.root = root
+        theme.apply(root)
         self.root.title(f"{APP_NAME} {VERSION} · {APP_TAGLINE}")
         self.root.geometry("1280x820")
         self.root.configure(bg=BG)
@@ -428,6 +435,7 @@ class DichApp:
         self._mic_opening = False
 
         self._build_style()
+        self._build_menu()
         self._build_widgets()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -438,66 +446,125 @@ class DichApp:
             backend.preload_model()
         self.root.after(200, self._check_server)
 
+    # -- menu -------------------------------------------------------------
+    def _build_menu(self):
+        """
+        Native menu bar.
+
+        macOS draws this in the system menu bar at the top of the screen, which
+        is where an app's commands are expected to live. Each entry dispatches
+        to the same handler as its toolbar counterpart, so there is exactly one
+        path per action.
+        """
+        bar = tk.Menu(self.root)
+        self.root.configure(menu=bar)
+
+        file_menu = tk.Menu(bar, tearoff=False)
+        bar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Open Document…", accelerator="Cmd+O",
+                              command=self.open_file)
+        file_menu.add_command(label="Open Audio…", accelerator="Cmd+Shift+O",
+                              command=self.open_audio)
+        file_menu.add_separator()
+        file_menu.add_command(label="Save Translation…", accelerator="Cmd+S",
+                              command=self.save_translation)
+        file_menu.add_separator()
+        file_menu.add_command(label="Close Window", accelerator="Cmd+W",
+                              command=self.root.destroy)
+
+        edit_menu = tk.Menu(bar, tearoff=False)
+        bar.add_cascade(label="Edit", menu=edit_menu)
+        edit_menu.add_command(label="Translate", command=self.translate_current)
+        edit_menu.add_command(label="Refine Speech", command=self.refine_speech)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Clear Translation", command=self.clear_translate)
+        edit_menu.add_command(label="Clear Speech", command=self.clear_speech)
+
+        view_menu = tk.Menu(bar, tearoff=False)
+        bar.add_cascade(label="View", menu=view_menu)
+        view_menu.add_command(label="Translate", command=lambda: self.notebook.select(0))
+        view_menu.add_command(label="Speech", command=lambda: self.notebook.select(1))
+        view_menu.add_command(label="Settings", command=lambda: self.notebook.select(2))
+
+        help_menu = tk.Menu(bar, tearoff=False)
+        bar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="About Dịch", command=self.show_about)
+
+        self._bind_shortcuts()
+
+    def _bind_shortcuts(self):
+        self.root.bind_all("<Command-o>", lambda e: self.open_file())
+        self.root.bind_all("<Command-O>", lambda e: self.open_audio())
+        self.root.bind_all("<Command-s>", lambda e: self.save_translation())
+
+    def show_about(self):
+        backend_info = (
+            f"Model: {backend.MODEL_NAME}\n"
+            f"Fallback: {', '.join(backend.CONFIG.get('fallback_models', [])) or 'none'}"
+        )
+        speech = "installed" if speech_engine else "not installed"
+        messagebox.showinfo(
+            "About Dịch",
+            f"{APP_NAME} {VERSION}\n{APP_TAGLINE}\n\n"
+            f"{backend_info}\n"
+            f"Speech: {speech}\n\n"
+            f"Translations run locally on this Mac.",
+        )
+
+    def clear_translate(self):
+        self.source_pane.set("")
+        self.target_pane.set("")
+        self.cache_label.configure(text="")
+        self.file_label.configure(text="nothing loaded")
+        self.status.reset()
+
     # -- style ------------------------------------------------------------
     def _build_style(self):
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure("TFrame", background=BG)
-        style.configure("TLabel", background=BG, foreground=FG, font=("SF Pro Text", 12))
-        style.configure("Header.TLabel", background=BG, foreground=FG, font=("SF Pro Text", 15, "bold"))
-        style.configure("App.TLabel", background=BG, foreground=FG, font=("SF Pro Text", 22, "bold"))
-        style.configure("Tagline.TLabel", background=BG, foreground=SUBTLE, font=("SF Pro Text", 11))
-        style.configure("Status.TLabel", background=BG, foreground=FG, font=("SF Pro Text", 11))
-        style.configure("TButton", font=("SF Pro Text", 12), padding=8)
-        style.configure("Primary.TButton", font=("SF Pro Text", 12, "bold"), padding=8)
-        style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=BG, foreground=SUBTLE, padding=[18, 8])
-        style.map("TNotebook.Tab", background=[("selected", BG)], foreground=[("selected", FG)])
-        style.configure("TEntry", fieldbackground=SURFACE, foreground=FG, padding=6)
-        style.configure("TCombobox", fieldbackground=SURFACE, foreground=FG, padding=6)
-        style.configure("Horizontal.TProgressbar", background=BLUE, troughcolor=SURFACE, borderwidth=0)
+        """ttk defaults live in theme.py; this only sets app-specific styles."""
+        ttk.Style(self.root).configure("TPane", background=BG)
 
     # -- widgets -----------------------------------------------------------
     def _build_widgets(self):
-        header = ttk.Frame(self.root)
-        header.pack(fill="x", padx=20, pady=(16, 8))
+        header = tk.Frame(self.root, bg=BG)
+        header.pack(fill="x", padx=theme.SPACE_5, pady=(theme.SPACE_4, theme.SPACE_2))
         header.columnconfigure(2, weight=1)
 
         # Name, language pair and model status all on one row, so the vertical
         # space goes to the panes instead of a stacked subtitle.
-        ttk.Label(header, text=APP_NAME, style="App.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(
+        tk.Label(
+            header, text=APP_NAME, font=theme.FONT_APP, bg=BG, fg=FG
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
             header, text=f"{APP_TAGLINE} · v{VERSION}",
-            style="Tagline.TLabel",
-        ).grid(row=0, column=1, sticky="w", padx=(12, 0), pady=(6, 0))
+            font=theme.FONT_SMALL, bg=BG, fg=SUBTLE,
+        ).grid(row=0, column=1, sticky="w", padx=(theme.SPACE_3, 0), pady=(8, 0))
 
-        status_box = ttk.Frame(header)
+        status_box = tk.Frame(header, bg=BG)
         status_box.grid(row=0, column=3, sticky="e")
-        self.health_dot = ttk.Label(
-            status_box, text="●", style="Status.TLabel", foreground=YELLOW
+        self.health_dot = tk.Label(
+            status_box, text="●", bg=BG, foreground=YELLOW, font=theme.FONT_SMALL
         )
         self.health_dot.pack(side="left")
-        self.health_text = ttk.Label(status_box, text="checking…", style="Tagline.TLabel")
+        self.health_text = tk.Label(
+            status_box, text="checking…", bg=BG, foreground=SUBTLE,
+            font=theme.FONT_SMALL,
+        )
         self.health_text.pack(side="left", padx=(4, 0))
-        self.model_label = ttk.Label(
-            status_box, text="", style="Tagline.TLabel", foreground=SUBTLE
+        self.model_label = tk.Label(
+            status_box, text="", bg=BG, foreground=SUBTLE, font=theme.FONT_SMALL
         )
         self.model_label.pack(side="left", padx=(8, 0))
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=12, pady=(4, 8))
+        self.notebook.pack(fill="both", expand=True, padx=theme.SPACE_3,
+                           pady=(theme.SPACE_1, theme.SPACE_2))
 
         self._build_translate_tab(self.notebook)
         self._build_speech_tab(self.notebook)
         self._build_settings_tab(self.notebook)
 
-        footer = ttk.Frame(self.root)
-        footer.pack(fill="x", padx=20, pady=(0, 16))
+        footer = tk.Frame(self.root, bg=BG)
+        footer.pack(fill="x", padx=theme.SPACE_5, pady=(0, theme.SPACE_4))
 
         self.status = StatusBar(footer)
         self.status.pack(fill="x")
@@ -506,56 +573,79 @@ class DichApp:
         tab = ttk.Frame(notebook)
         notebook.add(tab, text="  Translate  ")
 
-        toolbar = ttk.Frame(tab)
-        toolbar.pack(fill="x", padx=12, pady=10)
+        toolbar = tk.Frame(tab, bg=BG)
+        toolbar.pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_3)
 
-        ttk.Button(toolbar, text="Open File…", command=self.open_file).pack(side="left", padx=(0, 8))
-        ttk.Button(
-            toolbar, text="Translate", style="Primary.TButton", command=self.translate_current
-        ).pack(side="left", padx=(0, 8))
-        ttk.Button(toolbar, text="Save…", command=self.save_translation).pack(side="left")
+        theme.RoundedButton(
+            toolbar, "Open File…", command=self.open_file, variant="ghost"
+        ).pack(side="left", padx=(0, theme.SPACE_2))
+        theme.RoundedButton(
+            toolbar, "Translate", command=self.translate_current, variant="primary"
+        ).pack(side="left", padx=(0, theme.SPACE_2))
+        theme.RoundedButton(
+            toolbar, "Save…", command=self.save_translation, variant="ghost"
+        ).pack(side="left")
 
-        self.file_label = ttk.Label(toolbar, text="nothing loaded", style="Tagline.TLabel")
+        self.cache_label = ttk.Label(
+            toolbar, text="", style="Faint.TLabel", foreground=GREEN
+        )
+        self.cache_label.pack(side="right", padx=(theme.SPACE_3, 0))
+        self.file_label = ttk.Label(
+            toolbar, text="nothing loaded", style="Faint.TLabel"
+        )
         self.file_label.pack(side="right")
 
-        self.cache_label = ttk.Label(toolbar, text="", style="Tagline.TLabel", foreground=GREEN)
-        self.cache_label.pack(side="right", padx=(0, 14))
-
-        body = ttk.Frame(tab)
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        body = tk.Frame(tab, bg=BG)
+        body.pack(fill="both", expand=True, padx=theme.SPACE_3,
+                  pady=(0, theme.SPACE_3))
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
         self.source_pane = TextPane(
-            body, f"Source — {SOURCE_LANGUAGE}", placeholder=f"Paste {SOURCE_LANGUAGE} text here, or open a file…"
+            body, f"Source — {SOURCE_LANGUAGE}",
+            placeholder=f"Paste {SOURCE_LANGUAGE} text here, or open a file…",
         )
-        self.source_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.source_pane.grid(row=0, column=0, sticky="nsew",
+                              padx=(0, theme.SPACE_3))
 
         self.target_pane = TextPane(
             body, f"Translation — {TARGET_LANGUAGE}", editable=False,
             placeholder="Translation appears here", markdown=True,
         )
-        self.target_pane.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.target_pane.grid(row=0, column=1, sticky="nsew",
+                              padx=(theme.SPACE_3, 0))
 
     def _build_speech_tab(self, notebook: ttk.Notebook):
         tab = ttk.Frame(notebook)
         notebook.add(tab, text="  Speech  ")
 
-        toolbar = ttk.Frame(tab)
-        toolbar.pack(fill="x", padx=12, pady=10)
+        toolbar = tk.Frame(tab, bg=BG)
+        toolbar.pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_3)
 
-        self.mic_button = ttk.Button(toolbar, text="●  Record", command=self.toggle_recording)
-        self.mic_button.pack(side="left", padx=(0, 8))
-        ttk.Button(toolbar, text="Open Audio…", command=self.open_audio).pack(side="left", padx=(0, 8))
-        ttk.Button(toolbar, text="Refine", command=self.refine_speech).pack(side="left", padx=(0, 8))
-        ttk.Button(toolbar, text="Clear", command=self.clear_speech).pack(side="left")
+        # Record is a ttk button rather than a rounded one because it keeps
+        # being disabled and relabelled while the mic opens; driving that from
+        # the canvas widget would mean more state to keep in sync.
+        self.mic_button = ttk.Button(
+            toolbar, text="●  Record", command=self.toggle_recording
+        )
+        self.mic_button.pack(side="left", padx=(0, theme.SPACE_2))
+        theme.RoundedButton(
+            toolbar, "Open Audio…", command=self.open_audio, variant="ghost"
+        ).pack(side="left", padx=(0, theme.SPACE_2))
+        theme.RoundedButton(
+            toolbar, "Refine", command=self.refine_speech, variant="ghost"
+        ).pack(side="left", padx=(0, theme.SPACE_2))
+        theme.RoundedButton(
+            toolbar, "Clear", command=self.clear_speech, variant="ghost"
+        ).pack(side="left")
 
-        self.mic_status = ttk.Label(toolbar, text="idle", style="Tagline.TLabel")
-        self.mic_status.pack(side="left", padx=(14, 0))
+        self.mic_status = ttk.Label(toolbar, text="idle", style="Faint.TLabel")
+        self.mic_status.pack(side="left", padx=theme.SPACE_4)
 
-        body = ttk.Frame(tab)
-        body.pack(fill="both", expand=True, padx=12, pady=10)
+        body = tk.Frame(tab, bg=BG)
+        body.pack(fill="both", expand=True, padx=theme.SPACE_3,
+                  pady=(0, theme.SPACE_3))
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
@@ -563,13 +653,15 @@ class DichApp:
         self.transcript_pane = TextPane(
             body, f"Transcript — {SOURCE_LANGUAGE}", editable=False, placeholder="Transcript appears here"
         )
-        self.transcript_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.transcript_pane.grid(row=0, column=0, sticky="nsew",
+                                  padx=(0, theme.SPACE_3))
 
         self.speech_translation_pane = TextPane(
             body, f"Translation — {TARGET_LANGUAGE}", editable=False,
             placeholder="Translation appears here", markdown=True,
         )
-        self.speech_translation_pane.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.speech_translation_pane.grid(row=0, column=1, sticky="nsew",
+                                       padx=(theme.SPACE_3, 0))
 
     def _build_settings_tab(self, notebook: ttk.Notebook):
         tab = ttk.Frame(notebook)
@@ -581,13 +673,13 @@ class DichApp:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        form = ttk.Frame(canvas, padding=24)
+        form = tk.Frame(canvas, bg=theme.SURFACE0)
         window = canvas.create_window((0, 0), window=form, anchor="nw")
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
         form.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 
         # --- model settings ------------------------------------------------
-        ttk.Label(form, text="Model", style="Header.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 10))
+        self._section(form, "Model", row=0)
 
         self.model_var = tk.StringVar(value=backend.MODEL_NAME)
         self.source_var = tk.StringVar(value=SOURCE_LANGUAGE)
@@ -603,13 +695,11 @@ class DichApp:
             ttk.Entry(form, textvariable=var, width=54).grid(row=i, column=1, sticky="w", pady=6)
 
         ttk.Button(form, text="Save", command=self.save_settings).grid(row=5, column=0, pady=(16, 0), padx=(0, 8))
-        self.settings_status = ttk.Label(form, text="", style="Tagline.TLabel")
+        self.settings_status = ttk.Label(form, text="", style="Faint.TLabel")
         self.settings_status.grid(row=5, column=1, sticky="w", pady=(16, 0))
 
         # --- startup -------------------------------------------------------
-        ttk.Label(form, text="Startup", style="Header.TLabel").grid(
-            row=7, column=0, sticky="w", pady=(24, 10)
-        )
+        self._section(form, "Startup", row=7)
         self.preload_var = tk.BooleanVar(
             value=bool(backend.CONFIG.get("load_model_on_startup", True))
         )
@@ -625,13 +715,11 @@ class DichApp:
             form,
             text="Turned off, the model loads on the first translation instead "
                  "and the status stays red until then.",
-            style="Tagline.TLabel",
+            style="Faint.TLabel",
         ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
         # --- microphone -----------------------------------------------------
-        ttk.Label(form, text="Microphone", style="Header.TLabel").grid(
-            row=11, column=0, sticky="w", pady=(24, 10)
-        )
+        self._section(form, "Microphone", row=11)
 
         self.device_names: List[str] = []
         self.device_ids: List[Optional[int]] = []
@@ -663,7 +751,7 @@ class DichApp:
             text="The speech model only runs while recording. Larger models read "
                  "Vietnamese better but fall behind a live speaker: small is "
                  "about 16x realtime, large-v3-turbo about 3.6x.",
-            style="Tagline.TLabel",
+            style="Faint.TLabel",
         ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
         ttk.Label(form, text="Refine every (utterances)").grid(
@@ -682,15 +770,13 @@ class DichApp:
             text="How many utterances to collect before the whole block is "
                  "re-translated as one passage. Lower means earlier correction at "
                  "the cost of more model calls.",
-            style="Tagline.TLabel",
+            style="Faint.TLabel",
         ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
         # --- cache ----------------------------------------------------------
-        ttk.Label(form, text="Translation cache", style="Header.TLabel").grid(
-            row=18, column=0, sticky="w", pady=(24, 10)
-        )
+        self._section(form, "Translation cache", row=18)
 
-        self.cache_status = ttk.Label(form, text=self._cache_summary(), style="Tagline.TLabel")
+        self.cache_status = ttk.Label(form, text=self._cache_summary(), style="Faint.TLabel")
         self.cache_status.grid(row=19, column=0, columnspan=2, sticky="w", pady=4)
 
         ttk.Button(
@@ -698,14 +784,12 @@ class DichApp:
         ).grid(row=19, column=2, padx=8)
 
         # --- debug: google reference ---------------------------------------
-        ttk.Label(form, text="Debug", style="Header.TLabel").grid(
-            row=20, column=0, sticky="w", pady=(24, 10)
-        )
+        self._section(form, "Debug", row=20)
 
         ttk.Label(
             form,
             text="Google Translate reference for verifying output.",
-            style="Tagline.TLabel",
+            style="Faint.TLabel",
         ).grid(row=21, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         ttk.Button(
@@ -720,6 +804,11 @@ class DichApp:
         form.columnconfigure(1, weight=1)
 
     # -- helpers ----------------------------------------------------------
+    def _section(self, form, title, row):
+        """Settings section heading, drawn on the card surface."""
+        theme.SectionLabel(form, title).grid(row=row, column=0, sticky="w",
+                                             pady=(theme.SPACE_5, theme.SPACE_2))
+
     def _cache_summary(self) -> str:
         stats = cache_stats()
         return f"{stats['entries']} saved translation(s) in {stats['dir']}"
