@@ -694,7 +694,10 @@ class DichApp:
             ttk.Label(form, text=label).grid(row=i, column=0, sticky="w", pady=6)
             ttk.Entry(form, textvariable=var, width=54).grid(row=i, column=1, sticky="w", pady=6)
 
-        ttk.Button(form, text="Save", command=self.save_settings).grid(row=5, column=0, pady=(16, 0), padx=(0, 8))
+        theme.RoundedButton(
+            form, "Save", command=self.save_settings, variant="primary",
+            background=theme.SURFACE0,
+        ).grid(row=5, column=0, pady=(theme.SPACE_4, 0), padx=(0, theme.SPACE_2))
         self.settings_status = ttk.Label(form, text="", style="Faint.TLabel")
         self.settings_status.grid(row=5, column=1, sticky="w", pady=(16, 0))
 
@@ -733,9 +736,10 @@ class DichApp:
             form, textvariable=self.device_var, width=54, state="readonly"
         )
         self.device_combo.grid(row=12, column=1, sticky="w", pady=6)
-        ttk.Button(
-            form, text="Rescan", command=self._refresh_devices
-        ).grid(row=12, column=2, padx=8)
+        theme.RoundedButton(
+            form, "Rescan", command=self._refresh_devices, variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=12, column=2, padx=theme.SPACE_2)
 
         ttk.Label(form, text="Speech model").grid(row=13, column=0, sticky="w", pady=6)
         self.mic_model_var = tk.StringVar(
@@ -779,9 +783,10 @@ class DichApp:
         self.cache_status = ttk.Label(form, text=self._cache_summary(), style="Faint.TLabel")
         self.cache_status.grid(row=19, column=0, columnspan=2, sticky="w", pady=4)
 
-        ttk.Button(
-            form, text="Clear cache", command=self.clear_cache
-        ).grid(row=19, column=2, padx=8)
+        theme.RoundedButton(
+            form, "Clear cache", command=self.clear_cache, variant="danger",
+            background=theme.SURFACE0,
+        ).grid(row=19, column=2, padx=theme.SPACE_2)
 
         # --- debug: google reference ---------------------------------------
         self._section(form, "Debug", row=20)
@@ -792,9 +797,10 @@ class DichApp:
             style="Faint.TLabel",
         ).grid(row=21, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
-        ttk.Button(
-            form, text="Run Google reference", command=self.run_reference
-        ).grid(row=22, column=0, pady=4)
+        theme.RoundedButton(
+            form, "Run Google reference", command=self.run_reference, variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=22, column=0, pady=theme.SPACE_1)
 
         self.reference_pane = TextPane(
             form, "Google Translate reference", editable=False, placeholder="Reference appears here"
