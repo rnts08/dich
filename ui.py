@@ -1579,6 +1579,9 @@ def _human(num_bytes: int) -> str:
 
 
 def main():
+    # Load ~/.config/dich before the app reads any setting. Deferred from
+    # import so importing backend never touches the filesystem.
+    backend.init_config()
     root = tk.Tk()
     app = DichApp(root)
 

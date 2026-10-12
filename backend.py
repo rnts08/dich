@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -47,7 +48,21 @@ for noisy in ("httpx", "httpcore", "huggingface_hub", "faster_whisper", "urllib3
 CONFIG_ROOT = Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich"))
 MODELS_DIR = CONFIG_ROOT / "models"
 CONFIG_PATH = CONFIG_ROOT / "config.json"
-LEGACY_CONFIG_PATH = Path(__file__).parent / "config.json"
+
+# PyInstaller freezes the app into a temp extraction dir where __file__ points
+# at the packed module, not the source tree. Bundled data files (VERSION, the
+# seed config.json) sit under sys._MEIPASS there and beside the source in a
+# normal checkout, so every data lookup goes through resource_path().
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def resource_path(name: str) -> Path:
+    """Resolve a file bundled with the app, frozen or not."""
+    base = Path(sys._MEIPASS) if IS_FROZEN else Path(__file__).parent
+    return base / name
+
+
+LEGACY_CONFIG_PATH = resource_path("config.json")
 
 os.environ.setdefault("HF_HOME", str(CONFIG_ROOT))
 os.environ.setdefault("HF_HUB_CACHE", str(MODELS_DIR))
@@ -115,10 +130,7 @@ def ensure_dirs() -> None:
         logger.warning(f"Could not create {MODELS_DIR}: {e}")
 
 
-ensure_dirs()
-
-
-VERSION_FILE = Path(__file__).parent / "VERSION"
+VERSION_FILE = resource_path("VERSION")
 
 
 def get_version() -> str:
@@ -140,10 +152,36 @@ def get_version() -> str:
 VERSION = get_version()
 
 
-CONFIG = load_config()
+# Importing this module must not touch the filesystem: tests, embedding and
+# PyInstaller all care, and a read-only checkout must still import. The
+# globals start at the documented defaults; init_config() brings them up to
+# date from disk on first real use.
+CONFIG: Dict[str, Any] = dict(DEFAULT_CONFIG)
 MODEL_NAME: str = CONFIG["model"]
 SOURCE_LANGUAGE: str = CONFIG["source_language"]
 TARGET_LANGUAGE: str = CONFIG["target_language"]
+_CONFIG_LOADED = False
+
+
+def init_config() -> Dict[str, Any]:
+    """
+    Create the config directory if needed, load config.json, refresh globals.
+
+    Idempotent and a flag-check after the first call. ui.py calls it at
+    startup; the public translation entry points call it defensively so a
+    headless user of backend.py gets the configured model without having to
+    remember.
+    """
+    global _CONFIG_LOADED, CONFIG, MODEL_NAME, SOURCE_LANGUAGE, TARGET_LANGUAGE
+    if _CONFIG_LOADED:
+        return CONFIG
+    ensure_dirs()
+    CONFIG = load_config()
+    MODEL_NAME = CONFIG["model"]
+    SOURCE_LANGUAGE = CONFIG["source_language"]
+    TARGET_LANGUAGE = CONFIG["target_language"]
+    _CONFIG_LOADED = True
+    return CONFIG
 
 
 def reload_config() -> Dict[str, Any]:
@@ -154,11 +192,9 @@ def reload_config() -> Dict[str, Any]:
     Language-name changes only fully apply to labels on restart, since the UI
     builds them at startup.
     """
-    global CONFIG, MODEL_NAME, SOURCE_LANGUAGE, TARGET_LANGUAGE
-    CONFIG = load_config()
-    MODEL_NAME = CONFIG["model"]
-    SOURCE_LANGUAGE = CONFIG["source_language"]
-    TARGET_LANGUAGE = CONFIG["target_language"]
+    global _CONFIG_LOADED
+    _CONFIG_LOADED = False
+    init_config()
 
     # Drop resident engines so a model switch takes effect immediately rather
     # than silently reusing the previously loaded one.
@@ -741,6 +777,7 @@ def translate_text(
         RuntimeError: if no model in the chain (configured model plus
             fallback_models) succeeds.
     """
+    init_config()
     started = time.time()
     source = text.strip()
     if not source:
@@ -1087,6 +1124,7 @@ def translate_utterance(sentence: str, history: List[tuple],
         history: Prior (vietnamese, english) pairs, most recent last.
         model: Optional model override.
     """
+    init_config()
     name = model or MODEL_NAME
     style = get_profile(name)["prompt_style"]
     messages = _context_messages(sentence, history, style)
@@ -1110,6 +1148,7 @@ def translate_block(
             a partial block reads as a continuation without re-translating what
             came before.
     """
+    init_config()
     name = model or MODEL_NAME
     engine = get_engine(name)
     style = get_profile(name)["prompt_style"]
@@ -1161,6 +1200,7 @@ def preload_model(model: Optional[str] = None) -> bool:
     Returns:
         True if already loaded, False if a load was just started (or is running).
     """
+    init_config()
     name = model or MODEL_NAME
     if not isinstance(name, str):
         return False
@@ -1244,6 +1284,7 @@ def google_reference_translation(text: str, retries: int = 3) -> str:
     Translate text with Google Translate as an independent reference to
     compare against the local model's output. Debug/verification only.
     """
+    init_config()
     if not text.strip():
         return ""
 
@@ -1271,6 +1312,7 @@ def google_reference_translation(text: str, retries: int = 3) -> str:
 
 
 if __name__ == "__main__":
+    init_config()
     status = health_check()
     print(json.dumps({
         "server": status,
