@@ -1466,7 +1466,9 @@ class DichApp:
                 key = sentence.strip()
                 if not key:
                     continue
-                self.root.after(0, lambda s=key: self.transcript_pane.append(s + "\n\n"))
+                # _render_speech runs on its own thread, so the pane update
+                # must hop through Worker.post, not root.after directly.
+                self.worker.post(lambda s=key: self.transcript_pane.append(s + "\n\n"))
                 self.worker.run(
                     self.translator.add, key,
                     on_success=self._on_speech_utterance,
