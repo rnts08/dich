@@ -1326,11 +1326,6 @@ class DichApp:
                 f"done · {stats['refined']} refined", GREEN
             )
 
-        self.worker.run(
-            self.translator.add, sentence,
-            on_success=done, on_error=failed,
-        )
-
     def refine_speech(self):
         """Re-translate the pending utterances as one passage."""
         if self.translator is None or not self.translator.transcript:

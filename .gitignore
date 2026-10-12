@@ -65,3 +65,6 @@ faster-whisper*
 
 # macOS
 .DS_Store
+
+# Planning artifacts (hermes)
+/.hermes/
