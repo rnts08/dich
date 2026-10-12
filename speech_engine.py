@@ -143,22 +143,9 @@ class SpeechEngine:
 
         self._model = _whisper_model(self.model_size)
 
-        def on_audio(indata, frames, time_info, status):  # noqa: ARG001
-            with self._buffer_lock:
-                mono = np.ascontiguousarray(indata[:, 0])
-                self._buffer.append((mono, len(mono)))
-                self._buffered += len(mono)
-                # Drop the oldest audio once past the cap. A transcriber that
-                # cannot keep up would otherwise grow this without limit.
-                limit = int(self.buffer_max_seconds * SAMPLE_RATE)
-                while self._buffered > limit and len(self._buffer) > 1:
-                    dropped = self._buffer.popleft()
-                    self._buffered -= dropped[1]
-                    self._dropped += dropped[1]
-
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-            device=self.device_index, callback=on_audio,
+            device=self.device_index, callback=self._on_audio,
             blocksize=int(SAMPLE_RATE * 0.5),
         )
         self._stop.clear()
@@ -168,6 +155,20 @@ class SpeechEngine:
         ]
         for t in self._threads:
             t.start()
+
+    def _on_audio(self, indata, frames, time_info, status):  # noqa: ARG001
+        """Append one input block; drop the oldest audio once past the ceiling."""
+        with self._buffer_lock:
+            mono = np.ascontiguousarray(indata[:, 0])
+            self._buffer.append((mono, len(mono)))
+            self._buffered += len(mono)
+            # Drop the oldest audio once past the cap. A transcriber that
+            # cannot keep up would otherwise grow this without limit.
+            limit = int(self.buffer_max_seconds * SAMPLE_RATE)
+            while self._buffered > limit and len(self._buffer) > 1:
+                dropped = self._buffer.popleft()
+                self._buffered -= dropped[1]
+                self._dropped += dropped[1]
 
     def stop(self):
         self._stop.set()
