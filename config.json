@@ -7,7 +7,7 @@
     "mlx-community/Qwen3-4B-Instruct-2507-4bit"
   ],
   "mic_device_index": 0,
-  "mic_model": "medium",
+  "mic_model": "small",
   "refine_every": 6,
   "notes": "translategemma serves its own chat template in-process; Qwen3 is the fallback. mlx-lm cannot load T5 (VTSNLP/trans_model_vi_en) and plamo-2-translate is en<->ja only. mic_device_index null = system default; mic_model 'small' keeps up with a live speaker, 'large-v3-turbo' is more accurate but ~3.6x realtime."
 }
