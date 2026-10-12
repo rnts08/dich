@@ -10,6 +10,7 @@ NOTE ON MODELS:
     Models are configured in config.json, with fallback_models tried in order
     when the primary model fails.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -103,9 +104,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "load_model_on_startup": True,
     "fallback_models": ["mlx-community/Qwen3-4B-Instruct-2507-4bit"],
     # --- microphone ---
-    "mic_device_index": None,       # null = the system default microphone
-    "mic_model": "small",           # keeps up with a live speaker at 2s windows
-    "refine_every": 6,               # utterances between block re-translations
+    "mic_device_index": None,  # null = the system default microphone
+    "mic_model": "small",  # keeps up with a live speaker at 2s windows
+    "refine_every": 6,  # utterances between block re-translations
 }
 
 
@@ -212,10 +213,11 @@ def reload_config() -> Dict[str, Any]:
     logger.info(f"Config reloaded; active model is now {MODEL_NAME}")
     return CONFIG
 
+
 # Defaults for models with no dedicated profile. Models with a small context
 # window override these via MODEL_PROFILES.
-BATCH_SIZE = 24            # paragraphs per batch
-BATCH_CHAR_LIMIT = 8000    # characters per batch, keeps prompts under context limits
+BATCH_SIZE = 24  # paragraphs per batch
+BATCH_CHAR_LIMIT = 8000  # characters per batch, keeps prompts under context limits
 
 # Cache: identical input + model + language pair never needs re-translating.
 CACHE_DIR = Path("/tmp/dich-cache")
@@ -245,7 +247,7 @@ LANG_CODES = {
 MODEL_PROFILES = {
     "mlx-community/translategemma-4b-it-4bit": {
         "prompt_style": "translategemma",
-        "batch_char_limit": 1400,   # model context is only ~2K tokens
+        "batch_char_limit": 1400,  # model context is only ~2K tokens
         "batch_size": 8,
     },
     "mlx-community/translategemma-12b-it-4bit": {
@@ -304,7 +306,8 @@ def cache_put(text: str, translation: str) -> None:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(
                 {"translation": translation, "model": MODEL_NAME, "key": key},
-                f, ensure_ascii=False,
+                f,
+                ensure_ascii=False,
             )
         tmp.replace(path)  # atomic, avoids half-written cache entries
     except OSError as e:
@@ -334,6 +337,7 @@ def cache_stats() -> Dict[str, Any]:
 # Text extraction
 # ---------------------------------------------------------------------------
 
+
 def _read_pdf(file_path: str) -> str:
     """Extract text from a PDF file."""
     try:
@@ -341,11 +345,14 @@ def _read_pdf(file_path: str) -> str:
     except ImportError:
         try:
             import PyPDF2
+
             with open(file_path, "rb") as f:
                 reader = PyPDF2.PdfReader(f)
                 return "\n".join((p.extract_text() or "") for p in reader.pages)
         except ImportError:
-            raise ImportError("PDF support needs pypdf: pip install pypdf")
+            # Both pypdf and PyPDF2 missing: replace the incidental ImportError
+            # with the actionable message rather than chaining it.
+            raise ImportError("PDF support needs pypdf: pip install pypdf") from None
     reader = PdfReader(file_path)
     return "\n".join((p.extract_text() or "") for p in reader.pages)
 
@@ -353,6 +360,7 @@ def _read_pdf(file_path: str) -> str:
 def _read_docx(file_path: str) -> str:
     """Extract text from a .docx / .docm file, including tables."""
     import docx
+
     document = docx.Document(file_path)
     parts = [p.text for p in document.paragraphs]
     for table in document.tables:
@@ -365,11 +373,15 @@ def _read_doc(file_path: str) -> str:
     """Extract text from a legacy binary .doc file using macOS textutil."""
     import shutil
     import subprocess
+
     if shutil.which("textutil") is None:
         raise ImportError("Legacy .doc needs macOS 'textutil' (or convert to .docx).")
     result = subprocess.run(
         ["textutil", "-convert", "txt", "-stdout", file_path],
-        capture_output=True, text=True, timeout=60, check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
     )
     return result.stdout
 
@@ -377,6 +389,7 @@ def _read_doc(file_path: str) -> str:
 def _read_rtf(file_path: str) -> str:
     """Extract plain text from an RTF file by stripping control words."""
     from striprtf.striprtf import rtf_to_text
+
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         return rtf_to_text(f.read())
 
@@ -482,7 +495,9 @@ def _split_oversized(part: str, char_limit: int) -> List[str]:
     return out
 
 
-def _split_batches(text: str, size: int = BATCH_SIZE, char_limit: int = BATCH_CHAR_LIMIT) -> List[str]:
+def _split_batches(
+    text: str, size: int = BATCH_SIZE, char_limit: int = BATCH_CHAR_LIMIT
+) -> List[str]:
     """Split text into paragraph-aligned batches, keeping each under a size cap."""
     paragraphs = re.split(r"(\n\s*\n)", text)  # separators are kept in the list
     if len(paragraphs) <= size and len(text) <= char_limit:
@@ -509,9 +524,11 @@ def _split_batches(text: str, size: int = BATCH_SIZE, char_limit: int = BATCH_CH
 # Progress reporting
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Progress:
     """Streamed back to the UI while a translation runs."""
+
     done_batches: int = 0
     total_batches: int = 0
     words_translated: int = 0
@@ -595,6 +612,7 @@ class LocalEngine:
         with self._load_lock:
             if self._model is None:
                 from mlx_lm import load as mlx_load
+
                 logger.info(f"Loading model {self.model_name} ...")
                 started = time.time()
                 self._model, self._tokenizer = mlx_load(self.model_name)
@@ -642,21 +660,27 @@ class LocalEngine:
             text = chunk
             if MARKDOWN_INSTRUCTION.strip() not in chunk:
                 text = chunk + MARKDOWN_INSTRUCTION
-            return [{
-                "role": "user",
-                "content": [{
-                    "type": "text",
-                    "source_lang_code": _lang_code(SOURCE_LANGUAGE),
-                    "target_lang_code": _lang_code(TARGET_LANGUAGE),
-                    "text": text,
-                }],
-            }]
+            return [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "source_lang_code": _lang_code(SOURCE_LANGUAGE),
+                            "target_lang_code": _lang_code(TARGET_LANGUAGE),
+                            "text": text,
+                        }
+                    ],
+                }
+            ]
         return [
             {
                 "role": "system",
                 "content": SYSTEM_PROMPT.format(
                     source=SOURCE_LANGUAGE,
-                    source_native="tiếng Việt" if SOURCE_LANGUAGE == "Vietnamese" else SOURCE_LANGUAGE,
+                    source_native="tiếng Việt"
+                    if SOURCE_LANGUAGE == "Vietnamese"
+                    else SOURCE_LANGUAGE,
                     target=TARGET_LANGUAGE,
                 ),
             },
@@ -685,7 +709,9 @@ class LocalEngine:
         model, tokenizer = self.load()
         prompt = self.render_prompt(messages)
         raw = mlx_generate(
-            model, tokenizer, prompt=prompt,
+            model,
+            tokenizer,
+            prompt=prompt,
             max_tokens=max_tokens,
             sampler=make_sampler(temp=0.0),  # greedy: translation must be stable
             verbose=False,
@@ -737,9 +763,12 @@ def get_engine(model_name: str) -> "LocalEngine":
         return engine
 
 
-def _translate_chunks(chunks: List[str], engine: "LocalEngine",
-                      on_progress: Optional[Callable[[Progress], None]],
-                      progress: Progress) -> List[str]:
+def _translate_chunks(
+    chunks: List[str],
+    engine: "LocalEngine",
+    on_progress: Optional[Callable[[Progress], None]],
+    progress: Progress,
+) -> List[str]:
     """Translate every chunk with one model, reporting progress as it goes."""
     translated: List[str] = []
     for i, chunk in enumerate(chunks):
@@ -808,8 +837,10 @@ def translate_text(
         if hit is not None:
             logger.info("Cache hit, skipping translation")
             return TranslationResult(
-                text=hit, cached=True,
-                words_in=count_words(source), words_out=count_words(hit),
+                text=hit,
+                cached=True,
+                words_in=count_words(source),
+                words_out=count_words(hit),
                 elapsed=time.time() - started,
             )
 
@@ -819,7 +850,9 @@ def translate_text(
     last_error: Optional[Exception] = None
     for attempt, current in enumerate(chain):
         profile = get_profile(current)
-        chunks = _split_batches(source, profile["batch_size"], profile["batch_char_limit"])
+        chunks = _split_batches(
+            source, profile["batch_size"], profile["batch_char_limit"]
+        )
 
         progress = Progress(
             total_batches=len(chunks),
@@ -838,7 +871,9 @@ def translate_text(
             translated = _translate_chunks(chunks, engine, on_progress, progress)
         except Exception as e:  # noqa: BLE001 - try the fallback model, then report
             last_error = e
-            logger.warning(f"Translation with {current} failed: {type(e).__name__}: {e}")
+            logger.warning(
+                f"Translation with {current} failed: {type(e).__name__}: {e}"
+            )
             if attempt == len(chain) - 1:
                 break
             logger.info(f"Falling back to {chain[attempt + 1]}")
@@ -887,10 +922,15 @@ def translate_files(
     results = []
     for path in file_paths:
         try:
-            results.append({
-                "file": path, "ok": True,
-                "result": translate_file(path, model=model, on_progress=on_progress),
-            })
+            results.append(
+                {
+                    "file": path,
+                    "ok": True,
+                    "result": translate_file(
+                        path, model=model, on_progress=on_progress
+                    ),
+                }
+            )
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to translate {path}: {e}")
             results.append({"file": path, "ok": False, "error": str(e)})
@@ -912,8 +952,8 @@ def translate_files(
 #      as a single passage and replace the provisional line-by-line output.
 # Stage 2 is what makes the result improve as more speech is understood.
 
-CONTEXT_TURNS = 3          # prior utterances supplied as context
-REFINE_EVERY = 6           # utterances between whole-block re-translations
+CONTEXT_TURNS = 3  # prior utterances supplied as context
+REFINE_EVERY = 6  # utterances between whole-block re-translations
 
 
 def _context_messages(sentence: str, history: List[tuple], style: str) -> list:
@@ -927,12 +967,14 @@ def _context_messages(sentence: str, history: List[tuple], style: str) -> list:
         if style == "translategemma":
             return {
                 "role": "user",
-                "content": [{
-                    "type": "text",
-                    "source_lang_code": _lang_code(SOURCE_LANGUAGE),
-                    "target_lang_code": _lang_code(TARGET_LANGUAGE),
-                    "text": text,
-                }],
+                "content": [
+                    {
+                        "type": "text",
+                        "source_lang_code": _lang_code(SOURCE_LANGUAGE),
+                        "target_lang_code": _lang_code(TARGET_LANGUAGE),
+                        "text": text,
+                    }
+                ],
             }
         return {"role": "user", "content": text}
 
@@ -953,11 +995,12 @@ class ContextualTranslator:
     read the list rather than cache individual lines.
     """
 
-    def __init__(self, refine_every: int = REFINE_EVERY, on_refine=None,
-                 on_update=None):
+    def __init__(
+        self, refine_every: int = REFINE_EVERY, on_refine=None, on_update=None
+    ):
         self.transcript: List[str] = []
         self.translation: List[str] = []
-        self.elaborate: List[bool] = []     # True once a line has been refined
+        self.elaborate: List[bool] = []  # True once a line has been refined
         self.refined_blocks: List[dict] = []  # {start, end, text}
         self.refine_every = max(1, refine_every)
         self._on_refine = on_refine
@@ -986,7 +1029,7 @@ class ContextualTranslator:
             return ""
 
         index = len(self.transcript)
-        history = list(zip(self.transcript, self.translation))
+        history = list(zip(self.transcript, self.translation, strict=False))
         english = translate_utterance(sentence, history)
         self.transcript.append(sentence)
         self.translation.append(english)
@@ -1030,7 +1073,9 @@ class ContextualTranslator:
         if not block:
             return False
 
-        history = list(zip(self.transcript[:start], self.translation[:start]))
+        history = list(
+            zip(self.transcript[:start], self.translation[:start], strict=False)
+        )
         try:
             merged = translate_block(block, history=history)
         except Exception as e:  # noqa: BLE001 - keep earlier results usable
@@ -1048,14 +1093,15 @@ class ContextualTranslator:
         # sentences twice, once per block.
         end = len(self.transcript) - 1
         self.refined_blocks = [
-            b for b in self.refined_blocks
-            if b["end"] < start or b["start"] > end
+            b for b in self.refined_blocks if b["end"] < start or b["start"] > end
         ]
-        self.refined_blocks.append({
-            "start": start,
-            "end": end,
-            "text": merged.strip(),
-        })
+        self.refined_blocks.append(
+            {
+                "start": start,
+                "end": end,
+                "text": merged.strip(),
+            }
+        )
         for i in range(start, len(self.transcript)):
             self.elaborate[i] = True
 
@@ -1067,9 +1113,7 @@ class ContextualTranslator:
         Best display text: refined passages in place, with any utterances that
         sit outside a refined block shown individually.
         """
-        covered = [
-            False for _ in range(len(self.transcript))
-        ]
+        covered = [False for _ in range(len(self.transcript))]
         out: List[str] = []
         for block in self.refined_blocks:
             for i in range(block["start"], block["end"] + 1):
@@ -1097,9 +1141,7 @@ class ContextualTranslator:
         return self.refine(self.block_start)
 
     def render(self) -> str:
-        return "\n".join(
-            en if en else "(pending)" for en in self.translation
-        )
+        return "\n".join(en if en else "(pending)" for en in self.translation)
 
     def stats(self) -> dict:
         return {
@@ -1121,8 +1163,9 @@ class ContextualTranslator:
                 logger.warning(f"ContextualTranslator callback failed: {e}")
 
 
-def translate_utterance(sentence: str, history: List[tuple],
-                        model: Optional[str] = None) -> str:
+def translate_utterance(
+    sentence: str, history: List[tuple], model: Optional[str] = None
+) -> str:
     """
     Translate a single utterance with the preceding conversation as context.
 
@@ -1176,7 +1219,7 @@ def _split_translation(text: str, expected: int) -> List[str]:
     if len(lines) == expected:
         return lines
     if len(lines) > expected:
-        return lines[:expected - 1] + [" ".join(lines[expected - 1:])]
+        return lines[: expected - 1] + [" ".join(lines[expected - 1 :])]
     return lines + [""] * (expected - len(lines))
 
 
@@ -1245,7 +1288,9 @@ def health_check() -> Dict[str, Any]:
     'loading' - a preload is in progress
     idle     - nothing has asked for the model yet
     """
-    chain = [MODEL_NAME] + [m for m in CONFIG.get("fallback_models", []) if m != MODEL_NAME]
+    chain = [MODEL_NAME] + [
+        m for m in CONFIG.get("fallback_models", []) if m != MODEL_NAME
+    ]
     engine = _ENGINES.get(MODEL_NAME)
 
     if engine is not None and engine.loaded:
@@ -1265,6 +1310,7 @@ def health_check() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Google Translate reference (debug / verification only)
 # ---------------------------------------------------------------------------
+
 
 def _google_translate_chunk(chunk: str, source: str, target: str) -> str:
     response = httpx.get(
@@ -1317,12 +1363,18 @@ def google_reference_translation(text: str, retries: int = 3) -> str:
 if __name__ == "__main__":
     init_config()
     status = health_check()
-    print(json.dumps({
-        "server": status,
-        "cache": cache_stats(),
-        "config": {
-            "model": MODEL_NAME,
-            "source": SOURCE_LANGUAGE,
-            "target": TARGET_LANGUAGE,
-        },
-    }, indent=2, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "server": status,
+                "cache": cache_stats(),
+                "config": {
+                    "model": MODEL_NAME,
+                    "source": SOURCE_LANGUAGE,
+                    "target": TARGET_LANGUAGE,
+                },
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )

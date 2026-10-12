@@ -17,7 +17,9 @@ switches that to load-on-first-translation instead.
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python3 -m pytest                 # full suite, incl. the model goldens
-.venv/bin/python3 -m pytest -m "not model"  # fast subset — what CI runs
+.venv/bin/python3 -m pytest -m "not model"  # fast subset — what the hook runs
+.venv/bin/ruff check .                      # lint
+.venv/bin/ruff format .                     # format
 ```
 
 Tests sandbox their config (`DICH_HOME` points at a temp dir), so the real
@@ -29,8 +31,15 @@ output change, regenerate them and review the diff — that review is the gate:
 .venv/bin/python3 dev/regen_goldens.py
 ```
 
-CI (`.github/workflows/ci.yml`) runs the fast subset plus `py_compile` on every
-push, on macOS, in about a minute.
+Quality checks run locally: a pre-commit hook runs ruff (lint + format check)
+and the fast test suite on every commit. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+CI is deliberately disabled while the app is being finished; the workflow
+comes back from git history when the app ships.
 
 ## Where things live
 
@@ -71,8 +80,9 @@ time that model is asked for.
 | `dich/config.json` | first-run seed; the live copy lives at `~/.config/dich` |
 | `dev/bump_version.py` | bumps patch/minor, commits, and tags |
 | `dev/regen_goldens.py` | regenerates the golden translation files |
+| `ruff.toml` | lint + format rules (ruff) |
+| `.githooks/pre-commit` | local gate: ruff check, format check, fast test suite |
 | `tests/` | pytest suite: unit, Tk, and `model`-marked golden tests |
-| `.github/workflows/ci.yml` | CI: suite + `py_compile` on every push |
 | `test_data/` | sample documents and a Vietnamese speech recording (gitignored) |
 
 ## Translate tab

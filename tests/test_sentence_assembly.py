@@ -4,6 +4,7 @@ _ingest_segments is where the subtle failure modes live — the shipped bugs
 (the sentence flush that never fired) were all here. Feeding it fake segments
 exercises the rules without a microphone or a model.
 """
+
 import numpy as np
 
 from dich import speech_engine
@@ -46,8 +47,10 @@ def test_flush_on_segment_count_during_continuous_speech():
     # No punctuation anywhere: without the segment-count trigger, pending
     # accumulates forever and nothing is ever emitted.
     eng = _engine()
-    segs = [Seg("một hai ba", i * 0.3, i * 0.3 + 0.2)
-            for i in range(speech_engine.MAX_SEGMENTS_PER_EMIT)]
+    segs = [
+        Seg("một hai ba", i * 0.3, i * 0.3 + 0.2)
+        for i in range(speech_engine.MAX_SEGMENTS_PER_EMIT)
+    ]
     eng._ingest_segments(segs, 30.0)
     out = eng.drain_final_sentences()
     assert len(out) == 1
@@ -64,7 +67,7 @@ def test_flush_near_window_end():
 def test_trailing_silence_closes_the_utterance():
     eng = _engine()
     eng._last_samples = np.ones(32000, dtype=np.float32) * 0.5
-    eng._last_samples[-8000:] = 0.0001          # quiet tail -> silence flush
+    eng._last_samples[-8000:] = 0.0001  # quiet tail -> silence flush
     eng._ingest_segments([Seg("các bạn nghe rõ gì", 0.0, 1.0)], 30.0)
     assert eng.drain_final_sentences() == ["các bạn nghe rõ gì"]
 
@@ -74,7 +77,7 @@ def test_no_flush_without_a_trigger():
     eng._last_samples = np.ones(32000, dtype=np.float32) * 0.5  # loud tail
     eng._ingest_segments([Seg("một hai", 0.0, 0.3)], 30.0)
     assert eng.drain_final_sentences() == []
-    assert eng._pending == "một hai"           # held for the next window
+    assert eng._pending == "một hai"  # held for the next window
 
 
 def test_short_fragments_are_dropped_by_emit():
@@ -92,8 +95,7 @@ def test_whitespace_is_normalised():
 
 def test_hallucinated_segment_is_dropped():
     eng = _engine()
-    text = ("Hãy subscribe cho kênh La La School Để không bỏ lỡ "
-            "những video hấp dẫn.")
+    text = "Hãy subscribe cho kênh La La School Để không bỏ lỡ những video hấp dẫn."
     eng._ingest_segments([Seg(text, 0.0, 0.4)], 2.0)
     assert eng.drain_final_sentences() == []
     assert eng._pending == ""
@@ -102,13 +104,23 @@ def test_hallucinated_segment_is_dropped():
 def test_repeated_phrase_is_dropped():
     eng = _engine()
     eng._ingest_segments(
-        [Seg("Công phí dưỡng, công phí dưỡng, công phí dưỡng, công phí dưỡng",
-             0.0, 0.4)], 2.0)
+        [
+            Seg(
+                "Công phí dưỡng, công phí dưỡng, công phí dưỡng, công phí dưỡng",
+                0.0,
+                0.4,
+            )
+        ],
+        2.0,
+    )
     assert eng.drain_final_sentences() == []
 
 
 def test_real_speech_survives_the_filters():
     eng = _engine()
     eng._ingest_segments(
-        [Seg("Bài báo này nói về kinh tế Việt Nam năm nay.", 0.0, 0.4)], 2.0)
-    assert eng.drain_final_sentences() == ["Bài báo này nói về kinh tế Việt Nam năm nay."]
+        [Seg("Bài báo này nói về kinh tế Việt Nam năm nay.", 0.0, 0.4)], 2.0
+    )
+    assert eng.drain_final_sentences() == [
+        "Bài báo này nói về kinh tế Việt Nam năm nay."
+    ]

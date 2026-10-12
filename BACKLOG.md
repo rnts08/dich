@@ -145,6 +145,11 @@ These cost real debugging time. They are constraints, not tasks:
 
 ## Notes for whoever picks this up
 
+- CI is **intentionally disabled** until the app-finishing work lands: the
+  workflow file was removed on purpose (restore `.github/workflows/ci.yml`
+  from git history when the time comes — do not re-add new CI before then).
+  The local gate is `.githooks/pre-commit` (ruff check + format check + the
+  fast suite); enable it with `git config core.hooksPath .githooks`.
 - `dev/bump_version.py` bumps the patch, commits and tags, and refuses to run on
   a dirty tree. Commit your change first, then bump.
 - `DICH_LOG_LEVEL=INFO` restores the startup output that was silenced.

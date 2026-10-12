@@ -11,13 +11,14 @@ Tabs:
 The model loads in-process (dich.backend), so there is no separate server to
 start. Run with:  python -m dich
 """
+
 import json
 import queue
 import re
 import threading
-import webbrowser
 import tkinter as tk
 import traceback
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import List, Optional
@@ -76,7 +77,7 @@ LICENCE_SUMMARY = (
     "other non-commercial purposes. Commercial use, including embedding it in a "
     "paid product or offering it as a paid service, is not permitted without "
     "written permission from the copyright holder.\n\n"
-    "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND."
+    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.'
 )
 
 
@@ -95,9 +96,7 @@ _MD_FENCE = re.compile(r"^\s*```")
 _MD_BULLET = re.compile(r"^\s*[-*+]\s+(.*)$")
 _MD_NUMBERED = re.compile(r"^\s*\d+[.)]\s+(.*)$")
 _MD_QUOTE = re.compile(r"^\s*>\s?(.*)$")
-_MD_INLINE = re.compile(
-    r"(\*\*.+?\*\*|__.+?__|\*[^*]+?\*|_[^_]+?_|`[^`]+?`)"
-)
+_MD_INLINE = re.compile(r"(\*\*.+?\*\*|__.+?__|\*[^*]+?\*|_[^_]+?_|`[^`]+?`)")
 # HTML tags, in case a model returns them rather than Markdown. Showing "<h1>"
 # as literal text is how the Markdown-input bug first became visible.
 _HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
@@ -106,12 +105,25 @@ _HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
 def _strip_html(text: str) -> str:
     """Remove HTML tags, converting the common ones to their Markdown form first."""
     replacements = (
-        (r"<h1[^>]*>", "# "), (r"<h2[^>]*>", "## "), (r"<h3[^>]*>", "### "),
-        (r"</h[1-6]>", "\n"), (r"<strong>", "**"), (r"</strong>", "**"),
-        (r"<b>", "**"), (r"</b>", "**"), (r"<em>", "*"), (r"</em>", "*"),
-        (r"<i>", "*"), (r"</i>", "*"), (r"<code>", "`"), (r"</code>", "`"),
-        (r"<li[^>]*>", "- "), (r"</li>", "\n"), (r"<br\s*/?>", "\n"),
-        (r"<p[^>]*>", "\n"), (r"</p>", "\n"),
+        (r"<h1[^>]*>", "# "),
+        (r"<h2[^>]*>", "## "),
+        (r"<h3[^>]*>", "### "),
+        (r"</h[1-6]>", "\n"),
+        (r"<strong>", "**"),
+        (r"</strong>", "**"),
+        (r"<b>", "**"),
+        (r"</b>", "**"),
+        (r"<em>", "*"),
+        (r"</em>", "*"),
+        (r"<i>", "*"),
+        (r"</i>", "*"),
+        (r"<code>", "`"),
+        (r"</code>", "`"),
+        (r"<li[^>]*>", "- "),
+        (r"</li>", "\n"),
+        (r"<br\s*/?>", "\n"),
+        (r"<p[^>]*>", "\n"),
+        (r"</p>", "\n"),
     )
     for pattern, replacement in replacements:
         text = re.sub(pattern, replacement, text)
@@ -214,7 +226,9 @@ def _insert_inline(widget: tk.Text, text: str, block_tag: str | None) -> None:
         elif piece.startswith("__") and piece.endswith("__") and len(piece) > 4:
             tag = "bold"
             piece = piece[2:-2]
-        elif piece.startswith(("*", "_")) and piece.endswith(piece[0]) and len(piece) > 2:
+        elif (
+            piece.startswith(("*", "_")) and piece.endswith(piece[0]) and len(piece) > 2
+        ):
             tag = "italic"
             piece = piece[1:-1]
         elif piece.startswith("`") and piece.endswith("`") and len(piece) > 2:
@@ -242,6 +256,7 @@ class Worker:
 
     def run(self, fn, *args, on_success=None, on_error=None, **kwargs):
         """Run fn on a background thread. Extra kwargs are forwarded to fn."""
+
         def task():
             try:
                 result = fn(*args, **kwargs)
@@ -254,6 +269,7 @@ class Worker:
                 tb = traceback.format_exc()
                 if on_error:
                     self.queue.put(lambda e=exc, trace=tb: on_error(e, trace))
+
         threading.Thread(target=task, daemon=True).start()
 
     def post(self, fn, *args):
@@ -280,21 +296,35 @@ class Worker:
 # Text pane with placeholder support
 # ---------------------------------------------------------------------------
 class TextPane(ttk.Frame):
-    def __init__(self, master, label: str, editable: bool = True,
-                 placeholder: str = "", markdown: bool = False):
+    def __init__(
+        self,
+        master,
+        label: str,
+        editable: bool = True,
+        placeholder: str = "",
+        markdown: bool = False,
+    ):
         super().__init__(master)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         self.placeholder = placeholder
         self.markdown = markdown
 
-        ttk.Label(self, text=label).grid(row=0, column=0, sticky="w",
-                                        pady=(0, theme.SPACE_1))
+        ttk.Label(self, text=label).grid(
+            row=0, column=0, sticky="w", pady=(0, theme.SPACE_1)
+        )
 
         self.text = tk.Text(
-            self, wrap="word", bd=0, relief="flat",
-            bg=SURFACE, fg=FG, insertbackground=FG,
-            font=(theme.FONT_FAMILY, 12), padx=theme.SPACE_3, pady=theme.SPACE_2,
+            self,
+            wrap="word",
+            bd=0,
+            relief="flat",
+            bg=SURFACE,
+            fg=FG,
+            insertbackground=FG,
+            font=(theme.FONT_FAMILY, 12),
+            padx=theme.SPACE_3,
+            pady=theme.SPACE_2,
             state="normal" if editable else "disabled",
         )
         self.text.grid(row=1, column=0, sticky="nsew")
@@ -397,21 +427,33 @@ class StatusBar(ttk.Frame):
         self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 10))
 
         self.stats = ttk.Label(
-            self, text="idle", anchor="e",
-            font=(theme.MONO_FAMILY, 11), foreground=SUBTLE,
+            self,
+            text="idle",
+            anchor="e",
+            font=(theme.MONO_FAMILY, 11),
+            foreground=SUBTLE,
         )
         self.stats.grid(row=0, column=1, sticky="e", padx=(theme.SPACE_3, 0))
 
         self.memory = ttk.Label(
-            self, text="", anchor="e",
-            font=(theme.MONO_FAMILY, 11), foreground=SUBTLE,
+            self,
+            text="",
+            anchor="e",
+            font=(theme.MONO_FAMILY, 11),
+            foreground=SUBTLE,
         )
         self.memory.grid(row=0, column=2, sticky="e")
 
         self.hint = ttk.Label(
-            self, text="", anchor="w", font=(theme.FONT_FAMILY, 11), foreground=SUBTLE,
+            self,
+            text="",
+            anchor="w",
+            font=(theme.FONT_FAMILY, 11),
+            foreground=SUBTLE,
         )
-        self.hint.grid(row=1, column=0, columnspan=3, sticky="w", pady=(theme.SPACE_1, 0))
+        self.hint.grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(theme.SPACE_1, 0)
+        )
 
     # -- determinate -----------------------------------------------------
     def set_progress(self, percent: int):
@@ -500,16 +542,22 @@ class DichApp:
 
         file_menu = tk.Menu(bar, tearoff=False)
         bar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Open Document…", accelerator="Cmd+O",
-                              command=self.open_file)
-        file_menu.add_command(label="Open Audio…", accelerator="Cmd+Shift+O",
-                              command=self.open_audio)
+        file_menu.add_command(
+            label="Open Document…", accelerator="Cmd+O", command=self.open_file
+        )
+        file_menu.add_command(
+            label="Open Audio…", accelerator="Cmd+Shift+O", command=self.open_audio
+        )
         file_menu.add_separator()
-        file_menu.add_command(label="Save Translation…", accelerator="Cmd+S",
-                              command=self.save_translation)
+        file_menu.add_command(
+            label="Save Translation…",
+            accelerator="Cmd+S",
+            command=self.save_translation,
+        )
         file_menu.add_separator()
-        file_menu.add_command(label="Close Window", accelerator="Cmd+W",
-                              command=self.root.destroy)
+        file_menu.add_command(
+            label="Close Window", accelerator="Cmd+W", command=self.root.destroy
+        )
 
         edit_menu = tk.Menu(bar, tearoff=False)
         bar.add_cascade(label="Edit", menu=edit_menu)
@@ -521,7 +569,9 @@ class DichApp:
 
         view_menu = tk.Menu(bar, tearoff=False)
         bar.add_cascade(label="View", menu=view_menu)
-        view_menu.add_command(label="Translate", command=lambda: self.notebook.select(0))
+        view_menu.add_command(
+            label="Translate", command=lambda: self.notebook.select(0)
+        )
         view_menu.add_command(label="Speech", command=lambda: self.notebook.select(1))
         view_menu.add_command(label="Settings", command=lambda: self.notebook.select(2))
 
@@ -570,12 +620,15 @@ class DichApp:
 
         # Name, language pair and model status all on one row, so the vertical
         # space goes to the panes instead of a stacked subtitle.
+        tk.Label(header, text=APP_NAME, font=theme.FONT_APP, bg=BG, fg=FG).grid(
+            row=0, column=0, sticky="w"
+        )
         tk.Label(
-            header, text=APP_NAME, font=theme.FONT_APP, bg=BG, fg=FG
-        ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            header, text=f"{APP_TAGLINE} · v{VERSION}",
-            font=theme.FONT_SMALL, bg=BG, fg=SUBTLE,
+            header,
+            text=f"{APP_TAGLINE} · v{VERSION}",
+            font=theme.FONT_SMALL,
+            bg=BG,
+            fg=SUBTLE,
         ).grid(row=0, column=1, sticky="w", padx=(theme.SPACE_3, 0), pady=(8, 0))
 
         status_box = tk.Frame(header, bg=BG)
@@ -585,7 +638,10 @@ class DichApp:
         )
         self.health_dot.pack(side="left")
         self.health_text = tk.Label(
-            status_box, text="checking…", bg=BG, foreground=SUBTLE,
+            status_box,
+            text="checking…",
+            bg=BG,
+            foreground=SUBTLE,
             font=theme.FONT_SMALL,
         )
         self.health_text.pack(side="left", padx=(4, 0))
@@ -595,8 +651,12 @@ class DichApp:
         self.model_label.pack(side="left", padx=(8, 0))
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=theme.SPACE_3,
-                           pady=(theme.SPACE_1, theme.SPACE_2))
+        self.notebook.pack(
+            fill="both",
+            expand=True,
+            padx=theme.SPACE_3,
+            pady=(theme.SPACE_1, theme.SPACE_2),
+        )
 
         self._build_translate_tab(self.notebook)
         self._build_speech_tab(self.notebook)
@@ -635,25 +695,26 @@ class DichApp:
         self.file_label.pack(side="right")
 
         body = tk.Frame(tab, bg=BG)
-        body.pack(fill="both", expand=True, padx=theme.SPACE_3,
-                  pady=(0, theme.SPACE_3))
+        body.pack(fill="both", expand=True, padx=theme.SPACE_3, pady=(0, theme.SPACE_3))
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
         self.source_pane = TextPane(
-            body, f"Source — {backend.SOURCE_LANGUAGE}",
+            body,
+            f"Source — {backend.SOURCE_LANGUAGE}",
             placeholder=f"Paste {backend.SOURCE_LANGUAGE} text here, or open a file…",
         )
-        self.source_pane.grid(row=0, column=0, sticky="nsew",
-                              padx=(0, theme.SPACE_3))
+        self.source_pane.grid(row=0, column=0, sticky="nsew", padx=(0, theme.SPACE_3))
 
         self.target_pane = TextPane(
-            body, f"Translation — {backend.TARGET_LANGUAGE}", editable=False,
-            placeholder="Translation appears here", markdown=True,
+            body,
+            f"Translation — {backend.TARGET_LANGUAGE}",
+            editable=False,
+            placeholder="Translation appears here",
+            markdown=True,
         )
-        self.target_pane.grid(row=0, column=1, sticky="nsew",
-                              padx=(theme.SPACE_3, 0))
+        self.target_pane.grid(row=0, column=1, sticky="nsew", padx=(theme.SPACE_3, 0))
 
     def _build_speech_tab(self, notebook: ttk.Notebook):
         tab = ttk.Frame(notebook)
@@ -683,24 +744,31 @@ class DichApp:
         self.mic_status.pack(side="left", padx=theme.SPACE_4)
 
         body = tk.Frame(tab, bg=BG)
-        body.pack(fill="both", expand=True, padx=theme.SPACE_3,
-                  pady=(0, theme.SPACE_3))
+        body.pack(fill="both", expand=True, padx=theme.SPACE_3, pady=(0, theme.SPACE_3))
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
         self.transcript_pane = TextPane(
-            body, f"Transcript — {backend.SOURCE_LANGUAGE}", editable=False, placeholder="Transcript appears here"
+            body,
+            f"Transcript — {backend.SOURCE_LANGUAGE}",
+            editable=False,
+            placeholder="Transcript appears here",
         )
-        self.transcript_pane.grid(row=0, column=0, sticky="nsew",
-                                  padx=(0, theme.SPACE_3))
+        self.transcript_pane.grid(
+            row=0, column=0, sticky="nsew", padx=(0, theme.SPACE_3)
+        )
 
         self.speech_translation_pane = TextPane(
-            body, f"Translation — {backend.TARGET_LANGUAGE}", editable=False,
-            placeholder="Translation appears here", markdown=True,
+            body,
+            f"Translation — {backend.TARGET_LANGUAGE}",
+            editable=False,
+            placeholder="Translation appears here",
+            markdown=True,
         )
-        self.speech_translation_pane.grid(row=0, column=1, sticky="nsew",
-                                       padx=(theme.SPACE_3, 0))
+        self.speech_translation_pane.grid(
+            row=0, column=1, sticky="nsew", padx=(theme.SPACE_3, 0)
+        )
 
     def _build_settings_tab(self, notebook: ttk.Notebook):
         tab = ttk.Frame(notebook)
@@ -714,8 +782,12 @@ class DichApp:
 
         form = tk.Frame(canvas, bg=theme.SURFACE0)
         window = canvas.create_window((0, 0), window=form, anchor="nw")
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
-        form.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind(
+            "<Configure>", lambda e: canvas.itemconfigure(window, width=e.width)
+        )
+        form.bind(
+            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
 
         # --- model settings ------------------------------------------------
         self._section(form, "Model", row=0)
@@ -731,10 +803,15 @@ class DichApp:
         ]
         for i, (label, var) in enumerate(fields, start=1):
             ttk.Label(form, text=label).grid(row=i, column=0, sticky="w", pady=6)
-            ttk.Entry(form, textvariable=var, width=54).grid(row=i, column=1, sticky="w", pady=6)
+            ttk.Entry(form, textvariable=var, width=54).grid(
+                row=i, column=1, sticky="w", pady=6
+            )
 
         theme.RoundedButton(
-            form, "Save", command=self.save_settings, variant="primary",
+            form,
+            "Save",
+            command=self.save_settings,
+            variant="primary",
             background=theme.SURFACE0,
         ).grid(row=5, column=0, pady=(theme.SPACE_4, 0), padx=(0, theme.SPACE_2))
         self.settings_status = ttk.Label(form, text="", style="Faint.TLabel")
@@ -756,7 +833,7 @@ class DichApp:
         ttk.Label(
             form,
             text="Turned off, the model loads on the first translation instead "
-                 "and the status stays red until then.",
+            "and the status stays red until then.",
             style="Faint.TLabel",
         ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
@@ -776,7 +853,10 @@ class DichApp:
         )
         self.device_combo.grid(row=12, column=1, sticky="w", pady=6)
         theme.RoundedButton(
-            form, "Rescan", command=self._refresh_devices, variant="ghost",
+            form,
+            "Rescan",
+            command=self._refresh_devices,
+            variant="ghost",
             background=theme.SURFACE0,
         ).grid(row=12, column=2, padx=theme.SPACE_2)
 
@@ -784,8 +864,11 @@ class DichApp:
         self.mic_model_var = tk.StringVar()
         self.mic_model_labels = [label for _name, label in speech_engine.SPEECH_MODELS]
         self.mic_model_combo = ttk.Combobox(
-            form, textvariable=self.mic_model_var, width=54,
-            values=self.mic_model_labels, state="readonly",
+            form,
+            textvariable=self.mic_model_var,
+            width=54,
+            values=self.mic_model_labels,
+            state="readonly",
         )
         self.mic_model_combo.grid(row=13, column=1, sticky="w", pady=6)
         self._set_mic_model_label(backend.CONFIG.get("mic_model"))
@@ -793,27 +876,29 @@ class DichApp:
         ttk.Label(
             form,
             text="Only runs while recording. Realtime figures measured for "
-                 "Vietnamese on an Apple M5; above 1× keeps up with a speaker, "
-                 "below means the transcript lags.",
+            "Vietnamese on an Apple M5; above 1× keeps up with a speaker, "
+            "below means the transcript lags.",
             style="Faint.TLabel",
         ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
         ttk.Label(form, text="Refine every (utterances)").grid(
             row=15, column=0, sticky="w", pady=6
         )
-        self.refine_var = tk.IntVar(
-            value=int(backend.CONFIG.get("refine_every", 6))
-        )
+        self.refine_var = tk.IntVar(value=int(backend.CONFIG.get("refine_every", 6)))
         ttk.Spinbox(
-            form, from_=2, to=40, textvariable=self.refine_var, width=6,
+            form,
+            from_=2,
+            to=40,
+            textvariable=self.refine_var,
+            width=6,
             command=self._on_refine_every_changed,
         ).grid(row=15, column=1, sticky="w", pady=6)
 
         ttk.Label(
             form,
             text="How many utterances to collect before the whole block is "
-                 "re-translated as one passage. Lower means earlier correction at "
-                 "the cost of more model calls.",
+            "re-translated as one passage. Lower means earlier correction at "
+            "the cost of more model calls.",
             style="Faint.TLabel",
         ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 4))
         # --- listening ------------------------------------------------------
@@ -823,17 +908,23 @@ class DichApp:
             row=19, column=0, sticky="w", pady=6
         )
         self.window_var = tk.DoubleVar(
-            value=float(backend.CONFIG.get("window_seconds", speech_engine.WINDOW_SECONDS))
+            value=float(
+                backend.CONFIG.get("window_seconds", speech_engine.WINDOW_SECONDS)
+            )
         )
         ttk.Spinbox(
-            form, from_=0.5, to=30.0, increment=0.5,
-            textvariable=self.window_var, width=6,
+            form,
+            from_=0.5,
+            to=30.0,
+            increment=0.5,
+            textvariable=self.window_var,
+            width=6,
         ).grid(row=19, column=1, sticky="w", pady=6)
         ttk.Label(
             form,
             text="Seconds of audio per transcription. Short means the first words "
-                 "appear sooner; each call carries fixed overhead, so short windows "
-                 "also lower the realtime factor.",
+            "appear sooner; each call carries fixed overhead, so short windows "
+            "also lower the realtime factor.",
             style="Faint.TLabel",
         ).grid(row=20, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
@@ -841,28 +932,41 @@ class DichApp:
             row=21, column=0, sticky="w", pady=6
         )
         self.buffer_var = tk.IntVar(
-            value=int(backend.CONFIG.get("buffer_max_seconds", speech_engine.BUFFER_MAX_SECONDS))
+            value=int(
+                backend.CONFIG.get(
+                    "buffer_max_seconds", speech_engine.BUFFER_MAX_SECONDS
+                )
+            )
         )
         ttk.Spinbox(
-            form, from_=30, to=6000, increment=30,
-            textvariable=self.buffer_var, width=6,
+            form,
+            from_=30,
+            to=6000,
+            increment=30,
+            textvariable=self.buffer_var,
+            width=6,
         ).grid(row=21, column=1, sticky="w", pady=6)
         ttk.Label(
             form,
             text="Seconds of audio to hold before the oldest is dropped. 600s is "
-                 "about 38 MB. Raise it to let a slower model catch up, or to keep "
-                 "a long recording for re-transcribing.",
+            "about 38 MB. Raise it to let a slower model catch up, or to keep "
+            "a long recording for re-transcribing.",
             style="Faint.TLabel",
         ).grid(row=22, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
         # --- cache ----------------------------------------------------------
         self._section(form, "Translation cache", row=24)
 
-        self.cache_status = ttk.Label(form, text=self._cache_summary(), style="Faint.TLabel")
+        self.cache_status = ttk.Label(
+            form, text=self._cache_summary(), style="Faint.TLabel"
+        )
         self.cache_status.grid(row=25, column=0, columnspan=2, sticky="w", pady=4)
 
         theme.RoundedButton(
-            form, "Clear cache", command=self.clear_cache, variant="danger",
+            form,
+            "Clear cache",
+            command=self.clear_cache,
+            variant="danger",
             background=theme.SURFACE0,
         ).grid(row=25, column=2, padx=theme.SPACE_2)
 
@@ -876,14 +980,22 @@ class DichApp:
         ).grid(row=28, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         theme.RoundedButton(
-            form, "Run Google reference", command=self.run_reference, variant="ghost",
+            form,
+            "Run Google reference",
+            command=self.run_reference,
+            variant="ghost",
             background=theme.SURFACE0,
         ).grid(row=29, column=0, pady=theme.SPACE_1)
 
         self.reference_pane = TextPane(
-            form, "Google Translate reference", editable=False, placeholder="Reference appears here"
+            form,
+            "Google Translate reference",
+            editable=False,
+            placeholder="Reference appears here",
         )
-        self.reference_pane.grid(row=30, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        self.reference_pane.grid(
+            row=30, column=0, columnspan=2, sticky="nsew", pady=(10, 0)
+        )
         form.rowconfigure(30, weight=1)
         form.columnconfigure(1, weight=1)
 
@@ -905,20 +1017,27 @@ class DichApp:
         ).grid(row=36, column=0, sticky="w", pady=(0, 6))
 
         theme.RoundedButton(
-            form, "Home: github.com/rnts08/dich", command=self.open_home,
-            variant="ghost", background=theme.SURFACE0,
+            form,
+            "Home: github.com/rnts08/dich",
+            command=self.open_home,
+            variant="ghost",
+            background=theme.SURFACE0,
         ).grid(row=37, column=0, sticky="w", pady=(0, 8))
 
         theme.RoundedButton(
-            form, "Show licence", command=self.show_licence, variant="quiet",
+            form,
+            "Show licence",
+            command=self.show_licence,
+            variant="quiet",
             background=theme.SURFACE0,
         ).grid(row=37, column=2, sticky="w")
 
     # -- helpers ----------------------------------------------------------
     def _section(self, form, title, row):
         """Settings section heading, drawn on the card surface."""
-        theme.SectionLabel(form, title).grid(row=row, column=0, sticky="w",
-                                             pady=(theme.SPACE_5, theme.SPACE_2))
+        theme.SectionLabel(form, title).grid(
+            row=row, column=0, sticky="w", pady=(theme.SPACE_5, theme.SPACE_2)
+        )
 
     def _cache_summary(self) -> str:
         stats = cache_stats()
@@ -948,7 +1067,7 @@ class DichApp:
             index = backend.CONFIG.get("mic_device_index")
         if index is None:
             return "System default"
-        for device_index, name in zip(self.device_ids, self.device_names):
+        for device_index, name in zip(self.device_ids, self.device_names, strict=False):
             if device_index == index:
                 return name
         return f"Device {index} (not present)"
@@ -997,9 +1116,7 @@ class DichApp:
                     f"listening… · next transcript in "
                     f"{max(0.0, usage['window_seconds'] - usage['seconds']):.1f}s"
                 )
-                bar_line = (
-                    f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s"
-                )
+                bar_line = f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s"
                 mic_colour = GREEN
 
             if dropped > 0:
@@ -1097,7 +1214,9 @@ class DichApp:
 
     # -- translate tab ----------------------------------------------------
     def open_file(self):
-        path = filedialog.askopenfilename(title="Open a document to translate", filetypes=FILE_TYPES)
+        path = filedialog.askopenfilename(
+            title="Open a document to translate", filetypes=FILE_TYPES
+        )
         if not path:
             return
         self.current_file = Path(path)
@@ -1108,7 +1227,9 @@ class DichApp:
             backend.extract_text_from_file,
             path,
             on_success=self._on_file_loaded,
-            on_error=lambda exc, tb: self._show_error("Could not read that file", exc, tb),
+            on_error=lambda exc, tb: self._show_error(
+                "Could not read that file", exc, tb
+            ),
         )
 
     def _on_file_loaded(self, text: str):
@@ -1121,7 +1242,9 @@ class DichApp:
     def translate_current(self):
         text = self.source_pane.get()
         if not text:
-            messagebox.showwarning("Nothing to translate", "Open a file or paste some text first.")
+            messagebox.showwarning(
+                "Nothing to translate", "Open a file or paste some text first."
+            )
             return
 
         self.root.config(cursor="watch")
@@ -1133,7 +1256,9 @@ class DichApp:
             self.worker.post(self._on_progress, p)
 
         self.worker.run(
-            translate_text, text, on_progress=on_progress,
+            translate_text,
+            text,
+            on_progress=on_progress,
             on_success=self._on_translation_done,
             on_error=self._on_translation_error,
         )
@@ -1162,7 +1287,11 @@ class DichApp:
             return
 
         self.cache_label.configure(text="")
-        rate = f" · {result.tokens_per_second:.1f} tok/s" if result.tokens_per_second else ""
+        rate = (
+            f" · {result.tokens_per_second:.1f} tok/s"
+            if result.tokens_per_second
+            else ""
+        )
         self.status.set_stats(
             f"{result.words_out} words · {result.elapsed:.1f}s{rate}", FG
         )
@@ -1190,7 +1319,11 @@ class DichApp:
             title="Save translation",
             initialfile=initial,
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("Markdown", "*.md"), ("All files", "*.*")],
+            filetypes=[
+                ("Text files", "*.txt"),
+                ("Markdown", "*.md"),
+                ("All files", "*.*"),
+            ],
         )
         if not path:
             return
@@ -1243,7 +1376,9 @@ class DichApp:
         self.worker.run(
             speech_engine.transcribe_file,
             path,
-            speech_engine.FILE_MODEL if hasattr(speech_engine, "FILE_MODEL") else speech_engine.LIVE_MODEL,
+            speech_engine.FILE_MODEL
+            if hasattr(speech_engine, "FILE_MODEL")
+            else speech_engine.LIVE_MODEL,
             on_success=self._on_audio_transcribed,
             on_error=self._on_speech_error,
         )
@@ -1290,8 +1425,10 @@ class DichApp:
                 self._stream_sentences(sentences)
 
         self.worker.run(
-            self.translator.add, sentence,
-            on_success=done, on_error=failed,
+            self.translator.add,
+            sentence,
+            on_success=done,
+            on_error=failed,
         )
 
     def _on_finalized(self, ok):
@@ -1308,9 +1445,7 @@ class DichApp:
                 YELLOW,
             )
         else:
-            self.status.set_stats(
-                f"done · {stats['refined']} refined", GREEN
-            )
+            self.status.set_stats(f"done · {stats['refined']} refined", GREEN)
 
     def refine_speech(self):
         """Re-translate the pending utterances as one passage."""
@@ -1373,9 +1508,13 @@ class DichApp:
             speech_engine.start_mic_stream,
             model_size=str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL)),
             device_index=backend.CONFIG.get("mic_device_index"),
-            window_seconds=float(backend.CONFIG.get("window_seconds", speech_engine.WINDOW_SECONDS)),
+            window_seconds=float(
+                backend.CONFIG.get("window_seconds", speech_engine.WINDOW_SECONDS)
+            ),
             buffer_max_seconds=float(
-                backend.CONFIG.get("buffer_max_seconds", speech_engine.BUFFER_MAX_SECONDS)
+                backend.CONFIG.get(
+                    "buffer_max_seconds", speech_engine.BUFFER_MAX_SECONDS
+                )
             ),
             on_success=self._on_mic_started,
             on_error=self._on_mic_failed,
@@ -1419,6 +1558,7 @@ class DichApp:
         self.status.reset()
         try:
             from . import speech_engine
+
             speech_engine.stop_mic_stream()
         except ImportError:
             pass
@@ -1442,6 +1582,7 @@ class DichApp:
         earlier ones as context.
         """
         import time
+
         try:
             from . import speech_engine
         except ImportError:
@@ -1456,7 +1597,8 @@ class DichApp:
                 # must hop through Worker.post, not root.after directly.
                 self.worker.post(lambda s=key: self.transcript_pane.append(s + "\n\n"))
                 self.worker.run(
-                    self.translator.add, key,
+                    self.translator.add,
+                    key,
                     on_success=self._on_speech_utterance,
                     on_error=self._on_speech_error,
                 )
@@ -1477,7 +1619,7 @@ class DichApp:
     def _selected_device(self) -> Optional[int]:
         """Map the chosen dropdown label back to a PortAudio device index."""
         label = self.device_var.get()
-        for index, name in zip(self.device_ids, self.device_names):
+        for index, name in zip(self.device_ids, self.device_names, strict=False):
             if name == label:
                 return index
         return None
@@ -1491,17 +1633,19 @@ class DichApp:
             except (json.JSONDecodeError, OSError):
                 data = {}
 
-        data.update({
-            "model": self.model_var.get().strip(),
-            "source_language": self.source_var.get().strip(),
-            "target_language": self.target_var.get().strip(),
-            "load_model_on_startup": bool(self.preload_var.get()),
-            "mic_device_index": self._selected_device(),
-            "mic_model": self._selected_mic_model(),
-            "refine_every": int(self.refine_var.get()),
-            "window_seconds": float(self.window_var.get()),
-            "buffer_max_seconds": int(self.buffer_var.get()),
-        })
+        data.update(
+            {
+                "model": self.model_var.get().strip(),
+                "source_language": self.source_var.get().strip(),
+                "target_language": self.target_var.get().strip(),
+                "load_model_on_startup": bool(self.preload_var.get()),
+                "mic_device_index": self._selected_device(),
+                "mic_model": self._selected_mic_model(),
+                "refine_every": int(self.refine_var.get()),
+                "window_seconds": float(self.window_var.get()),
+                "buffer_max_seconds": int(self.buffer_var.get()),
+            }
+        )
 
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -1525,7 +1669,10 @@ class DichApp:
         """Debug: Google Translate reference for the current source text."""
         text = self.source_pane.get()
         if not text:
-            messagebox.showwarning("Nothing to compare", "Load some source text on the Translate tab first.")
+            messagebox.showwarning(
+                "Nothing to compare",
+                "Load some source text on the Translate tab first.",
+            )
             return
         self.notebook.select(2)  # switch to Settings so the result is visible
         self.reference_pane.set("")
@@ -1537,7 +1684,9 @@ class DichApp:
                 self.reference_pane.set(r),
                 self.status.set_stats("reference ready", GREEN),
             ),
-            on_error=lambda exc, tb: self._show_error("Google Translate failed", exc, tb),
+            on_error=lambda exc, tb: self._show_error(
+                "Google Translate failed", exc, tb
+            ),
         )
 
     # -- misc -------------------------------------------------------------
@@ -1549,6 +1698,7 @@ class DichApp:
         self.recording = False
         try:
             from . import speech_engine
+
             speech_engine.stop_mic_stream()
         except Exception:  # noqa: BLE001
             pass
@@ -1578,6 +1728,7 @@ def main():
     # this point -- the stream is already closed.
     try:
         import multiprocessing.resource_tracker as rt
+
         rt.unregister_resource = lambda *a, **k: None
     except Exception:  # noqa: BLE001 - cosmetic
         pass

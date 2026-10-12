@@ -9,6 +9,7 @@ the diff — that review is the gate.
 Each golden file starts with a metadata comment naming the app, model and
 mlx-lm versions it was generated with; the comparison ignores comment lines.
 """
+
 import json
 from pathlib import Path
 
@@ -26,6 +27,7 @@ def _weights_must_be_cached(backend):
     # The cache location comes from the env (set in conftest), not from
     # backend.MODELS_DIR, which follows the sandboxed DICH_HOME.
     import os
+
     cache = Path(os.environ["HF_HUB_CACHE"])
     cached = cache / ("models--" + backend.MODEL_NAME.replace("/", "--"))
     if not cached.exists():

@@ -4,6 +4,7 @@ The overflow logic lived inside the start() closure, unreachable without a
 live microphone. It is now SpeechEngine._on_audio, so the buffer ceiling —
 the only unbounded thing in the audio path — is testable directly.
 """
+
 import numpy as np
 
 from dich import speech_engine
@@ -16,7 +17,7 @@ def _block(marker: float, samples: int = speech_engine.SAMPLE_RATE // 10):
 
 def test_overflow_drops_oldest_and_counts():
     eng = speech_engine.SpeechEngine()
-    eng.buffer_max_seconds = 1.0            # bypass the 10 s constructor clamp
+    eng.buffer_max_seconds = 1.0  # bypass the 10 s constructor clamp
     limit = int(eng.buffer_max_seconds * speech_engine.SAMPLE_RATE)
     block_samples = speech_engine.SAMPLE_RATE // 10
 

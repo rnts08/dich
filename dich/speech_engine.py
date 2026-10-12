@@ -19,6 +19,7 @@ Design notes:
 
 Requires: pip install sounddevice faster-whisper numpy av
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,9 +38,17 @@ import numpy as np
 # import time. backend.py sets them too, but this module can be imported on its
 # own, and pointing them at ~/.config/dich/models is what keeps a fresh install
 # from re-downloading a model it already has.
-os.environ.setdefault("HF_HOME", str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich"))))
-os.environ.setdefault("HF_HUB_CACHE", str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich")) / "models"))
-os.environ.setdefault("TRANSFORMERS_CACHE", str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich")) / "models"))
+os.environ.setdefault(
+    "HF_HOME", str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich")))
+)
+os.environ.setdefault(
+    "HF_HUB_CACHE",
+    str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich")) / "models"),
+)
+os.environ.setdefault(
+    "TRANSFORMERS_CACHE",
+    str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich")) / "models"),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +63,7 @@ SAMPLE_RATE = 16000
 # catches up whenever the speaker pauses. Keeping up is why `small` is the
 # live default rather than `medium`.
 WINDOW_SECONDS = 2.0
-MIN_SENTENCE_CHARS = 8        # drop tiny fragments ("uh", "vâng" alone)
+MIN_SENTENCE_CHARS = 8  # drop tiny fragments ("uh", "vâng" alone)
 # Segments to accumulate before flushing. Whisper returns several segments per
 # window; without a cap, continuous speech parks everything in _pending.
 MAX_SEGMENTS_PER_EMIT = 4
@@ -99,20 +108,39 @@ def speech_model_label(model: str) -> str:
             return label
     return model
 
+
 _END_PUNCT = ".?!。！？…"
 # vietnamese final particles / connectors that usually close a sentence
 _END_WORDS = {
-    "rồi", "xong", "nhé", "nha", "nha bạn", "được", "cảm ơn",
-    "vâng", "dạ", "ừ", "ừa", "thôi", "nào", "sao", "không", "chưa",
+    "rồi",
+    "xong",
+    "nhé",
+    "nha",
+    "nha bạn",
+    "được",
+    "cảm ơn",
+    "vâng",
+    "dạ",
+    "ừ",
+    "ừa",
+    "thôi",
+    "nào",
+    "sao",
+    "không",
+    "chưa",
 }
 
 
 class SpeechEngine:
     """Records from the default microphone and yields completed Vietnamese sentences."""
 
-    def __init__(self, model_size: str = DEFAULT_MODEL, device_index: Optional[int] = None,
-                 window_seconds: float = WINDOW_SECONDS,
-                 buffer_max_seconds: float = BUFFER_MAX_SECONDS):
+    def __init__(
+        self,
+        model_size: str = DEFAULT_MODEL,
+        device_index: Optional[int] = None,
+        window_seconds: float = WINDOW_SECONDS,
+        buffer_max_seconds: float = BUFFER_MAX_SECONDS,
+    ):
         self.model_size = model_size
         self.device_index = device_index
         self.window_seconds = max(0.5, float(window_seconds))
@@ -143,8 +171,11 @@ class SpeechEngine:
         self._model = _whisper_model(self.model_size)
 
         self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-            device=self.device_index, callback=self._on_audio,
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            device=self.device_index,
+            callback=self._on_audio,
             blocksize=int(SAMPLE_RATE * 0.5),
         )
         self._stop.clear()
@@ -201,7 +232,7 @@ class SpeechEngine:
         return {
             "samples": samples,
             "seconds": samples / SAMPLE_RATE,
-            "bytes": samples * 4,          # float32 mono
+            "bytes": samples * 4,  # float32 mono
             "blocks": blocks,
             "dropped_seconds": dropped / SAMPLE_RATE,
             "window_seconds": self.window_seconds,
@@ -272,9 +303,11 @@ class SpeechEngine:
             return  # effectively quiet; do not let the model invent text
         try:
             segments, _info = self._model.transcribe(
-                samples, language="vi", beam_size=5,
-                vad_filter=True,                     # drop non-speech
-                condition_on_previous_text=False,    # no hallucination feedback
+                samples,
+                language="vi",
+                beam_size=5,
+                vad_filter=True,  # drop non-speech
+                condition_on_previous_text=False,  # no hallucination feedback
             )
         except Exception as e:  # noqa: BLE001 - a failed window must not kill capture
             logger.warning(f"Transcribe window failed: {type(e).__name__}: {e}")
@@ -307,9 +340,11 @@ class SpeechEngine:
             # count, continuous speech accumulates in _pending and nothing is
             # ever emitted.
             near_window_end = seg.end >= window_seconds - 1.5
-            if (self._is_complete(self._pending)
-                    or self._pending_segments >= MAX_SEGMENTS_PER_EMIT
-                    or near_window_end):
+            if (
+                self._is_complete(self._pending)
+                or self._pending_segments >= MAX_SEGMENTS_PER_EMIT
+                or near_window_end
+            ):
                 self._emit(self._pending)
                 self._pending = ""
 
@@ -344,11 +379,11 @@ class SpeechEngine:
 
         if samples is None or len(samples) == 0:
             return False
-        tail = samples[int(len(samples) * (1.0 - TRAILING_SHARE)):]
+        tail = samples[int(len(samples) * (1.0 - TRAILING_SHARE)) :]
         if len(tail) == 0:
             return False
-        whole = float(np.sqrt(np.mean(samples ** 2)))
-        tail_rms = float(np.sqrt(np.mean(tail ** 2)))
+        whole = float(np.sqrt(np.mean(samples**2)))
+        tail_rms = float(np.sqrt(np.mean(tail**2)))
         if whole <= 0.0:
             return False
         return tail_rms < whole * TRAILING_RATIO
@@ -435,7 +470,7 @@ def _is_repetition(text: str) -> bool:
             continue  # "của của của" is a genuine repeat of one word
         run = 1
         for start in range(size, len(words) - size + 1, size):
-            if tuple(words[start:start + size]) == unit:
+            if tuple(words[start : start + size]) == unit:
                 run += 1
             else:
                 break
@@ -499,6 +534,7 @@ def default_input_device() -> Optional[int]:
     """Index of the system default microphone, or None if there isn't one."""
     try:
         import sounddevice as sd
+
         info = sd.query_devices(kind="input")
         return int(info["index"])
     except Exception:  # noqa: BLE001 - no audio subsystem or no device
@@ -563,6 +599,7 @@ def stop_mic_stream():
 # Audio file input
 # ---------------------------------------------------------------------------
 
+
 def _whisper_model(name: str):
     """Build a WhisperModel, with an install hint instead of a raw ImportError."""
     try:
@@ -607,7 +644,7 @@ def load_audio(
         for frame in container.decode(container.streams.audio[0]):
             frame_seconds = float(frame.samples) / max(frame.sample_rate, 1)
             if position + frame_seconds <= start:
-                position += frame_seconds          # fast-forward past `start`
+                position += frame_seconds  # fast-forward past `start`
                 continue
             for packet in resampler.resample(frame):
                 pcm = packet.to_ndarray().reshape(-1)
@@ -623,8 +660,13 @@ def load_audio(
 class TranscriptionResult:
     """Sentences transcribed from one audio source."""
 
-    def __init__(self, language: str = "", language_probability: float = 0.0,
-                 model: str = "", duration: float = 0.0):
+    def __init__(
+        self,
+        language: str = "",
+        language_probability: float = 0.0,
+        model: str = "",
+        duration: float = 0.0,
+    ):
         self.language = language
         self.language_probability = language_probability
         self.model = model
@@ -656,14 +698,14 @@ def transcribe_file(
     finish quickly.
     """
     audio = load_audio(path, duration=max_seconds)
-    logger.info(
-        f"Decoded {path}: {len(audio) / SAMPLE_RATE:.1f}s at {SAMPLE_RATE} Hz"
-    )
+    logger.info(f"Decoded {path}: {len(audio) / SAMPLE_RATE:.1f}s at {SAMPLE_RATE} Hz")
 
     model = _whisper_model(model_name)
     segments, info = model.transcribe(
-        audio, language="vi", beam_size=5,
-        vad_filter=True,                 # skip silence instead of noise
+        audio,
+        language="vi",
+        beam_size=5,
+        vad_filter=True,  # skip silence instead of noise
         condition_on_previous_text=True,  # carry context across sentences
     )
 

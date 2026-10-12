@@ -3,6 +3,7 @@
 The fixtures are generated here rather than taken from test_data/, which is
 gitignored — CI must be able to run these without the developer's samples.
 """
+
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,11 +20,12 @@ def _norm(text: str) -> str:
 def test_pdf(backend):
     out = backend.extract_text_from_file(str(FIXTURES / "vi_sample.pdf"))
     assert "Tài liệu mẫu tiếng Việt." in _norm(out)
-    assert "ư, ơ, ạ" in _norm(out)          # diacritics survive extraction
+    assert "ư, ơ, ạ" in _norm(out)  # diacritics survive extraction
 
 
 def test_docx_paragraphs_and_tables(backend, tmp_path):
     import docx
+
     path = tmp_path / "sample.docx"
     document = docx.Document()
     document.add_heading("Mục một", level=1)
@@ -36,7 +38,7 @@ def test_docx_paragraphs_and_tables(backend, tmp_path):
     out = backend.extract_text_from_file(str(path))
     assert "Mục một" in out
     assert "Xin chào các bạn." in out
-    assert "Ông Nguyễn\tViệt Nam" in out    # table rows are tab-joined
+    assert "Ông Nguyễn\tViệt Nam" in out  # table rows are tab-joined
 
 
 def test_docm_dispatches_to_the_docx_extractor(backend, tmp_path):
@@ -80,8 +82,14 @@ def test_legacy_doc_via_textutil(backend, tmp_path):
     # textutil cannot create .doc from nothing: convert the RTF fixture.
     path = tmp_path / "sample.doc"
     subprocess.run(
-        ["textutil", "-convert", "doc", "-output", str(path),
-         str(FIXTURES / "vi_sample.rtf")],
+        [
+            "textutil",
+            "-convert",
+            "doc",
+            "-output",
+            str(path),
+            str(FIXTURES / "vi_sample.rtf"),
+        ],
         check=True,
     )
     assert backend.extract_text_from_file(str(path))

@@ -61,30 +61,36 @@ def test_profile_override_only_applies_to_the_configured_model(backend, monkeypa
     # The configured model picks up the override...
     assert backend.get_profile("some/model")["prompt_style"] == "chat"
     # ...while a TranslateGemma model that is not configured keeps its own style.
-    assert (backend.get_profile("mlx-community/translategemma-4b-it-4bit")
-            ["prompt_style"] == "translategemma")
+    assert (
+        backend.get_profile("mlx-community/translategemma-4b-it-4bit")["prompt_style"]
+        == "translategemma"
+    )
 
 
 def test_context_messages_keep_only_the_last_three_turns(backend, monkeypatch):
-    _gemma(backend, monkeypatch)          # sets the language globals
+    _gemma(backend, monkeypatch)  # sets the language globals
     history = [(f"câu {i}", f"line {i}") for i in range(5)]
     messages = backend._context_messages("câu mới", history, "translategemma")
 
     assert [m["role"] for m in messages] == [
-        "user", "assistant", "user", "assistant", "user", "assistant", "user",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
     ]
     user_texts = [
-        turn["content"][0]["text"]
-        for turn in messages if turn["role"] == "user"
+        turn["content"][0]["text"] for turn in messages if turn["role"] == "user"
     ]
-    assert user_texts[0] == "câu 2"       # CONTEXT_TURNS = 3, oldest dropped
+    assert user_texts[0] == "câu 2"  # CONTEXT_TURNS = 3, oldest dropped
     assert user_texts[-1] == "câu mới"
 
 
 def test_context_messages_chat_style_keeps_plain_strings(backend, monkeypatch):
-    _qwen(backend, monkeypatch)           # sets the language globals
-    messages = backend._context_messages(
-        "câu mới", [("câu một", "line one")], "chat")
+    _qwen(backend, monkeypatch)  # sets the language globals
+    messages = backend._context_messages("câu mới", [("câu một", "line one")], "chat")
     assert messages[0] == {"role": "user", "content": "câu một"}
     assert messages[1] == {"role": "assistant", "content": "line one"}
     assert messages[2] == {"role": "user", "content": "câu mới"}

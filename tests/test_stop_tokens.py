@@ -20,7 +20,7 @@ class FakeTokenizer:
 
 def _engine(backend, tokenizer):
     engine = backend.LocalEngine("fake/model")
-    engine._tokenizer = tokenizer        # __init__ loads nothing
+    engine._tokenizer = tokenizer  # __init__ loads nothing
     return engine
 
 
@@ -45,14 +45,14 @@ def test_unknown_token_leaves_the_stop_set_alone(backend):
 
 def test_tokenizer_without_the_helper_is_survivable(backend):
     engine = _engine(backend, FakeTokenizer(fail=True))
-    engine._align_stop_tokens()           # must not raise
+    engine._align_stop_tokens()  # must not raise
     assert engine._tokenizer.eos_token_ids == {1}
 
 
 def test_trim_cuts_at_end_of_turn(backend):
     out = backend._trim_stop_tokens("Được.<end_of_turn>" + " junk" * 2000)
     assert out == "Được."
-    assert len(out) < 60                  # the 6000-character runaway
+    assert len(out) < 60  # the 6000-character runaway
 
 
 def test_trim_cuts_at_eos_variants_and_strips(backend):

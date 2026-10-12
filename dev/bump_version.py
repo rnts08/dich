@@ -14,6 +14,7 @@ Usage:
 The script updates VERSION, commits it, and tags v<version>. Run it after the
 real changes are committed, or with --no-commit to update VERSION only.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,12 +53,17 @@ def git(*args: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("part", nargs="?", default="patch",
-                        choices=["patch", "minor", "major"])
-    parser.add_argument("--dry", action="store_true",
-                        help="show the next version and exit")
-    parser.add_argument("--no-commit", action="store_true",
-                        help="update VERSION but do not commit or tag")
+    parser.add_argument(
+        "part", nargs="?", default="patch", choices=["patch", "minor", "major"]
+    )
+    parser.add_argument(
+        "--dry", action="store_true", help="show the next version and exit"
+    )
+    parser.add_argument(
+        "--no-commit",
+        action="store_true",
+        help="update VERSION but do not commit or tag",
+    )
     args = parser.parse_args()
 
     version = bump(args.part)
@@ -87,8 +93,13 @@ def main() -> int:
     # diff, so `git diff v0.1.2 v0.1.3` would show nothing but the number.
     git("add", str(VERSION_FILE))
     git("commit", "--amend", "--no-edit")
-    git("tag", "-a", f"v{new}", "-m",
-        f"Release {new} ({git('log', '-1', '--format=%s')})")
+    git(
+        "tag",
+        "-a",
+        f"v{new}",
+        "-m",
+        f"Release {new} ({git('log', '-1', '--format=%s')})",
+    )
     print(f"tagged v{new} at {git('rev-parse', '--short', 'HEAD')}")
     return 0
 

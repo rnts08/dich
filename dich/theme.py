@@ -13,6 +13,7 @@ Widgets follow a small custom set rather than fighting ttk's defaults:
 Tk's `clam` theme is the base because it ignores most platform chrome, which
 otherwise leaks through on Aqua and breaks the flat look.
 """
+
 from __future__ import annotations
 
 import tkinter as tk
@@ -22,14 +23,14 @@ from tkinter import ttk
 # ---------------------------------------------------------------------------
 # Palette - Catppuccin Mocha
 # ---------------------------------------------------------------------------
-BASE = "#1e1e2e"       # deepest background
-MANTLE = "#181825"      # app chrome / menu
-SURFACE0 = "#313244"   # raised surface: inputs, panes
-SURFACE1 = "#45475a"   # borders, dividers
-SURFACE2 = "#585b70"   # stronger dividers, disabled text
-OVERLAY = "#6c7086"    # placeholder / hint
-TEXT = "#cdd6f4"       # primary text
-SUBTEXT = "#a6adc8"    # secondary text
+BASE = "#1e1e2e"  # deepest background
+MANTLE = "#181825"  # app chrome / menu
+SURFACE0 = "#313244"  # raised surface: inputs, panes
+SURFACE1 = "#45475a"  # borders, dividers
+SURFACE2 = "#585b70"  # stronger dividers, disabled text
+OVERLAY = "#6c7086"  # placeholder / hint
+TEXT = "#cdd6f4"  # primary text
+SUBTEXT = "#a6adc8"  # secondary text
 ROSEWATER = "#f5e0dc"
 
 LAVENDER = "#b4befe"
@@ -49,7 +50,7 @@ PINK = "#f5c2e7"
 FONT_FAMILY = "SF Pro Text"
 MONO_FAMILY = "SF Mono"
 
-FONT_APP = (FONT_FAMILY, 22, "bold")        # app name
+FONT_APP = (FONT_FAMILY, 22, "bold")  # app name
 FONT_H1 = (FONT_FAMILY, 16, "bold")
 FONT_H2 = (FONT_FAMILY, 13, "bold")
 FONT_BODY = (FONT_FAMILY, 12)
@@ -68,7 +69,7 @@ SPACE_4 = 16
 SPACE_5 = 24
 SPACE_6 = 32
 
-RADIUS = 8          # rounded corners
+RADIUS = 8  # rounded corners
 RADIUS_SMALL = 5
 
 
@@ -83,8 +84,9 @@ MD_TAGS = {
     "italic": dict(font=(FONT_FAMILY, 12, "italic")),
     "bold_italic": dict(font=(FONT_FAMILY, 12, "bold italic")),
     "code": dict(font=(MONO_FAMILY, 11), background=SURFACE0),
-    "code_block": dict(font=(MONO_FAMILY, 11), background=SURFACE0,
-                       spacing1=6, spacing3=6),
+    "code_block": dict(
+        font=(MONO_FAMILY, 11), background=SURFACE0, spacing1=6, spacing3=6
+    ),
     "list": dict(spacing1=2, spacing3=2, lmargin1=18, lmargin2=18),
     "quote": dict(foreground=OVERLAY, lmargin1=18, lmargin2=18, spacing1=6),
 }
@@ -127,13 +129,15 @@ def _style_labels(style: ttk.Style) -> None:
     style.configure("H1.TLabel", background=BASE, foreground=TEXT, font=FONT_H1)
     style.configure("H2.TLabel", background=BASE, foreground=TEXT, font=FONT_H2)
     style.configure("Body.TLabel", background=BASE, foreground=TEXT, font=FONT_BODY)
-    style.configure("Faint.TLabel", background=BASE, foreground=OVERLAY, font=FONT_SMALL)
-    style.configure("Section.TLabel", background=SURFACE0, foreground=SUBTEXT,
-                    font=FONT_FAINT)
+    style.configure(
+        "Faint.TLabel", background=BASE, foreground=OVERLAY, font=FONT_SMALL
+    )
+    style.configure(
+        "Section.TLabel", background=SURFACE0, foreground=SUBTEXT, font=FONT_FAINT
+    )
     style.configure("Mono.TLabel", background=BASE, foreground=TEXT, font=FONT_MONO)
     style.configure("Status.TLabel", background=BASE, foreground=TEXT, font=FONT_SMALL)
-    style.configure("Stat.TLabel", background=BASE, foreground=SUBTEXT,
-                    font=FONT_MONO)
+    style.configure("Stat.TLabel", background=BASE, foreground=SUBTEXT, font=FONT_MONO)
     style.configure("Good.TLabel", background=BASE, foreground=GREEN, font=FONT_SMALL)
     style.configure("Bad.TLabel", background=BASE, foreground=RED, font=FONT_SMALL)
     style.configure("Busy.TLabel", background=BASE, foreground=YELLOW, font=FONT_SMALL)
@@ -141,8 +145,13 @@ def _style_labels(style: ttk.Style) -> None:
 
 def _style_buttons(style: ttk.Style) -> None:
     style.configure(
-        "TButton", background=SURFACE0, foreground=TEXT, font=FONT_BODY,
-        borderwidth=0, focuscolor=BASE, padding=(SPACE_3, SPACE_1 + 2),
+        "TButton",
+        background=SURFACE0,
+        foreground=TEXT,
+        font=FONT_BODY,
+        borderwidth=0,
+        focuscolor=BASE,
+        padding=(SPACE_3, SPACE_1 + 2),
     )
     style.map(
         "TButton",
@@ -152,8 +161,12 @@ def _style_buttons(style: ttk.Style) -> None:
 
     # The one loud control on a screen, e.g. Translate.
     style.configure(
-        "Primary.TButton", background=BLUE, foreground=BASE,
-        font=(FONT_FAMILY, 12, "bold"), borderwidth=0, focuscolor=BASE,
+        "Primary.TButton",
+        background=BLUE,
+        foreground=BASE,
+        font=(FONT_FAMILY, 12, "bold"),
+        borderwidth=0,
+        focuscolor=BASE,
         padding=(SPACE_4, SPACE_1 + 2),
     )
     style.map(
@@ -163,28 +176,47 @@ def _style_buttons(style: ttk.Style) -> None:
     )
 
     style.configure(
-        "Danger.TButton", background=RED, foreground=BASE, font=FONT_BODY,
-        borderwidth=0, focuscolor=BASE, padding=(SPACE_3, SPACE_1 + 2),
+        "Danger.TButton",
+        background=RED,
+        foreground=BASE,
+        font=FONT_BODY,
+        borderwidth=0,
+        focuscolor=BASE,
+        padding=(SPACE_3, SPACE_1 + 2),
     )
     style.map("Danger.TButton", background=[("active", PINK)])
 
     style.configure(
-        "Ghost.TButton", background=BASE, foreground=SUBTEXT, font=FONT_SMALL,
-        borderwidth=0, focuscolor=BASE, padding=(SPACE_2, SPACE_1),
+        "Ghost.TButton",
+        background=BASE,
+        foreground=SUBTEXT,
+        font=FONT_SMALL,
+        borderwidth=0,
+        focuscolor=BASE,
+        padding=(SPACE_2, SPACE_1),
     )
     style.map("Ghost.TButton", foreground=[("active", TEXT)])
 
 
 def _style_inputs(style: ttk.Style) -> None:
     style.configure(
-        "TEntry", fieldbackground=SURFACE0, foreground=TEXT,
-        insertcolor=TEXT, borderwidth=0, padding=(SPACE_2, SPACE_1),
+        "TEntry",
+        fieldbackground=SURFACE0,
+        foreground=TEXT,
+        insertcolor=TEXT,
+        borderwidth=0,
+        padding=(SPACE_2, SPACE_1),
     )
     style.map("TEntry", fieldbackground=[("focus", SURFACE1)])
 
     style.configure(
-        "TCombobox", fieldbackground=SURFACE0, background=SURFACE0, foreground=TEXT,
-        arrowcolor=TEXT, borderwidth=0, padding=(SPACE_2, SPACE_1),
+        "TCombobox",
+        fieldbackground=SURFACE0,
+        background=SURFACE0,
+        foreground=TEXT,
+        arrowcolor=TEXT,
+        borderwidth=0,
+        padding=(SPACE_2, SPACE_1),
     )
     style.map(
         "TCombobox",
@@ -194,8 +226,12 @@ def _style_inputs(style: ttk.Style) -> None:
     )
 
     style.configure(
-        "TCheckbutton", background=BASE, foreground=TEXT, font=FONT_BODY,
-        focuscolor=BASE, borderwidth=0,
+        "TCheckbutton",
+        background=BASE,
+        foreground=TEXT,
+        font=FONT_BODY,
+        focuscolor=BASE,
+        borderwidth=0,
     )
     style.map(
         "TCheckbutton",
@@ -206,17 +242,27 @@ def _style_inputs(style: ttk.Style) -> None:
     )
 
     style.configure(
-        "TSpinbox", fieldbackground=SURFACE0, foreground=TEXT, arrowcolor=TEXT,
-        borderwidth=0, padding=(SPACE_2, SPACE_1),
+        "TSpinbox",
+        fieldbackground=SURFACE0,
+        foreground=TEXT,
+        arrowcolor=TEXT,
+        borderwidth=0,
+        padding=(SPACE_2, SPACE_1),
     )
 
     style.configure(
-        "Vertical.TScrollbar", background=SURFACE1, troughcolor=BASE,
-        borderwidth=0, arrowcolor=OVERLAY,
+        "Vertical.TScrollbar",
+        background=SURFACE1,
+        troughcolor=BASE,
+        borderwidth=0,
+        arrowcolor=OVERLAY,
     )
     style.configure(
-        "Horizontal.TScrollbar", background=SURFACE1, troughcolor=BASE,
-        borderwidth=0, arrowcolor=OVERLAY,
+        "Horizontal.TScrollbar",
+        background=SURFACE1,
+        troughcolor=BASE,
+        borderwidth=0,
+        arrowcolor=OVERLAY,
     )
 
 
@@ -224,8 +270,12 @@ def _style_notebook(style: ttk.Style) -> None:
     """Underlined active tab rather than the boxed default."""
     style.configure("TNotebook", background=BASE, borderwidth=0, tabmargins=0)
     style.configure(
-        "TNotebook.Tab", background=BASE, foreground=OVERLAY,
-        font=FONT_BODY, borderwidth=0, padding=(SPACE_4, SPACE_2),
+        "TNotebook.Tab",
+        background=BASE,
+        foreground=OVERLAY,
+        font=FONT_BODY,
+        borderwidth=0,
+        padding=(SPACE_4, SPACE_2),
     )
     style.map(
         "TNotebook.Tab",
@@ -235,14 +285,20 @@ def _style_notebook(style: ttk.Style) -> None:
     # clam draws a box around the selected tab; flatten it and rely on the
     # foreground change plus the status bar for the active state.
     try:
-        style.layout("TNotebook.Tab", [
-            ("Notebook.tab", {
-                "sticky": "nswe",
-                "children": [
-                    ("Notebook.label", {"side": "left", "sticky": ""}),
-                ],
-            })
-        ])
+        style.layout(
+            "TNotebook.Tab",
+            [
+                (
+                    "Notebook.tab",
+                    {
+                        "sticky": "nswe",
+                        "children": [
+                            ("Notebook.label", {"side": "left", "sticky": ""}),
+                        ],
+                    },
+                )
+            ],
+        )
     except tk.TclError:  # pragma: no cover - layout change is cosmetic
         pass
 
@@ -250,12 +306,16 @@ def _style_notebook(style: ttk.Style) -> None:
 def _style_progressbar(style: ttk.Style) -> None:
     style.configure(
         "Horizontal.TProgressbar",
-        background=BLUE, troughcolor=SURFACE0, borderwidth=0,
+        background=BLUE,
+        troughcolor=SURFACE0,
+        borderwidth=0,
         thickness=6,
     )
     style.configure(
         "Horizontal.Busy.TProgressbar",
-        background=MAUVE, troughcolor=SURFACE0, borderwidth=0,
+        background=MAUVE,
+        troughcolor=SURFACE0,
+        borderwidth=0,
         thickness=6,
     )
 
@@ -305,8 +365,12 @@ class RoundedButton(tk.Canvas):
         self._width = self._text_width + self._pad_x * 2
 
         super().__init__(
-            master, bg=self._bg_root, highlightthickness=0, bd=0,
-            width=self._width, height=self._height,
+            master,
+            bg=self._bg_root,
+            highlightthickness=0,
+            bd=0,
+            width=self._width,
+            height=self._height,
             scrollregion=(0, 0, self._width, self._height),
             **kwargs,
         )
@@ -326,15 +390,30 @@ class RoundedButton(tk.Canvas):
             0, 0, self._width, height, fill=self._fill, outline=""
         )
         self._cap_left = self.create_arc(
-            -radius, 0, radius, height, start=90, extent=180,
-            fill=self._fill, outline="",
+            -radius,
+            0,
+            radius,
+            height,
+            start=90,
+            extent=180,
+            fill=self._fill,
+            outline="",
         )
         self._cap_right = self.create_arc(
-            self._width - radius, 0, self._width + radius, height,
-            start=270, extent=180, fill=self._fill, outline="",
+            self._width - radius,
+            0,
+            self._width + radius,
+            height,
+            start=270,
+            extent=180,
+            fill=self._fill,
+            outline="",
         )
         self._label = self.create_text(
-            self._width // 2, height // 2, text=self._text, fill=self._fg,
+            self._width // 2,
+            height // 2,
+            text=self._text,
+            fill=self._fg,
             font=self._font,
         )
 
@@ -373,12 +452,13 @@ class RoundedButton(tk.Canvas):
         self.coords(self._label, self._width // 2, self._height // 2)
         radius = self._height // 2
         self.coords(self._shape, 0, 0, self._width, self._height)
-        self.coords(
-            self._cap_left, -radius, 0, radius, self._height
-        )
+        self.coords(self._cap_left, -radius, 0, radius, self._height)
         self.coords(
             self._cap_right,
-            self._width - radius, 0, self._width + radius, self._height,
+            self._width - radius,
+            0,
+            self._width + radius,
+            self._height,
         )
 
     def set_enabled(self, enabled: bool) -> None:

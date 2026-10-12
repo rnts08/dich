@@ -4,14 +4,14 @@ The trade-off is deliberate and asserted here as such: a genuinely spoken
 "cảm ơn các bạn" is dropped because in YouTube-trained Whisper it is
 overwhelmingly an artefact.
 """
+
 import numpy as np
 
 from dich import speech_engine
 
 
 def test_youtube_boilerplate_is_caught():
-    text = ("Hãy subscribe cho kênh La La School Để không bỏ lỡ "
-            "những video hấp dẫn.")
+    text = "Hãy subscribe cho kênh La La School Để không bỏ lỡ những video hấp dẫn."
     assert speech_engine._is_hallucination(text)
 
 
@@ -31,7 +31,8 @@ def test_repetition_of_a_real_phrase_is_flagged():
 
 def test_natural_repetition_is_not_flagged():
     assert not speech_engine._is_repetition(
-        "Bộ trưởng bộ giáo dục nói về bộ sách giáo khoa mới của bộ.")
+        "Bộ trưởng bộ giáo dục nói về bộ sách giáo khoa mới của bộ."
+    )
 
 
 def test_too_short_to_judge():

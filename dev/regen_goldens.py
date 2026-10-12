@@ -8,6 +8,7 @@ DIFF: that review is the quality gate these files exist for.
 
     .venv/bin/python3 dev/regen_goldens.py
 """
+
 from __future__ import annotations
 
 import json
@@ -25,6 +26,7 @@ GOLDEN_DIR = ROOT / "tests" / "golden"
 def _mlx_lm_version() -> str:
     try:
         from importlib.metadata import version
+
         return version("mlx-lm")
     except Exception:  # noqa: BLE001
         return "unknown"
@@ -40,8 +42,10 @@ def main() -> int:
         result = backend.translate_text(source, use_cache=False)
         path = GOLDEN_DIR / f"{name}.golden.md"
         path.write_text(header + "\n" + result.text.strip() + "\n", encoding="utf-8")
-        print(f"{name}: {result.words_in} -> {result.words_out} words, "
-              f"{result.tokens_out} tokens, {result.elapsed:.1f}s")
+        print(
+            f"{name}: {result.words_in} -> {result.words_out} words, "
+            f"{result.tokens_out} tokens, {result.elapsed:.1f}s"
+        )
     return 0
 
 

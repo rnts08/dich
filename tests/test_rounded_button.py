@@ -5,6 +5,7 @@ re-fire <Enter>, and recreate again — an infinite loop inside Tk's event
 dispatch that pegged the UI thread (the beachball freeze). The invariant is:
 hover recolours, never rebuilds.
 """
+
 import pytest
 
 pytestmark = pytest.mark.display
@@ -12,9 +13,9 @@ pytestmark = pytest.mark.display
 
 def _button(root, clicks=None):
     from dich import theme
+
     recorded = [] if clicks is None else clicks
-    button = theme.RoundedButton(
-        root, text="Open", command=lambda: recorded.append(1))
+    button = theme.RoundedButton(root, text="Open", command=lambda: recorded.append(1))
     button.pack(padx=20, pady=20)
     root.update()
     return button
@@ -79,7 +80,7 @@ def test_double_enter_does_not_reenter(requires_display):
     button = _button(root)
 
     button.event_generate("<Enter>", x=5, y=5)
-    button.event_generate("<Enter>", x=5, y=5)   # second enter while hovered
+    button.event_generate("<Enter>", x=5, y=5)  # second enter while hovered
     root.update()
     assert button._hovering is True
-    assert len(button.find_all()) == 4           # shape, two caps, label
+    assert len(button.find_all()) == 4  # shape, two caps, label
