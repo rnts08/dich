@@ -324,7 +324,10 @@ class SpeechEngine:
     def _is_complete(self, text: str) -> bool:
         """Heuristic: does this chunk look like a finished sentence?"""
         stripped = text.rstrip()
-        if stripped.endswith(_END_PUNCT):
+        # endswith() with a plain string checks the whole string as one suffix,
+        # so ".?!。！？…" matched only text ending in that entire sequence —
+        # never. The tuple makes each mark a candidate.
+        if stripped.endswith(tuple(_END_PUNCT)):
             return True
         last = stripped.split()[-1].lower().strip(",.!?…") if stripped.split() else ""
         return last in _END_WORDS
