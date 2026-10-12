@@ -6,7 +6,7 @@ the only unbounded thing in the audio path — is testable directly.
 """
 import numpy as np
 
-import speech_engine
+from dich import speech_engine
 
 
 def _block(marker: float, samples: int = speech_engine.SAMPLE_RATE // 10):

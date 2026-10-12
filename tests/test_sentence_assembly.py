@@ -6,7 +6,7 @@ exercises the rules without a microphone or a model.
 """
 import numpy as np
 
-import speech_engine
+from dich import speech_engine
 
 
 class Seg:

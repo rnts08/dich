@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION_FILE = ROOT / "VERSION"
+VERSION_FILE = ROOT / "dich" / "VERSION"
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 

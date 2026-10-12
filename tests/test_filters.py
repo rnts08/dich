@@ -6,7 +6,7 @@ overwhelmingly an artefact.
 """
 import numpy as np
 
-import speech_engine
+from dich import speech_engine
 
 
 def test_youtube_boilerplate_is_caught():

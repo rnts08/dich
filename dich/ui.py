@@ -5,11 +5,11 @@ Tabs:
   1. Translate  - open a file (pdf/docx/docm/doc/rtf/md/txt) or paste text, see
                   source and translation side by side
   2. Speech     - microphone -> Vietnamese speech-to-text -> English translation
-  3. Settings   - model / languages / port, cache controls, and a debug panel
+  3. Settings   - model / languages, cache controls, and a debug panel
                   with the Google Translate reference translation
 
-The model loads in-process (backend.py), so there is no separate server to start.
-Just run:  python ui.py
+The model loads in-process (dich.backend), so there is no separate server to
+start. Run with:  python -m dich
 """
 import json
 import queue
@@ -22,23 +22,20 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import List, Optional
 
-import backend
-import theme
-from backend import (
+from . import backend, theme
+from .backend import (
     CONFIG_PATH,
-    SOURCE_LANGUAGE,
-    TARGET_LANGUAGE,
     Progress,
     TranslationResult,
     cache_clear,
     cache_stats,
     google_reference_translation,
-    is_server_ready,
+    health_check,
     translate_text,
 )
 
 try:  # speech is optional; the UI explains what to install if it is missing
-    import speech_engine
+    from . import speech_engine
 except ImportError:  # pragma: no cover
     speech_engine = None
 
@@ -81,17 +78,6 @@ LICENCE_SUMMARY = (
     "written permission from the copyright holder.\n\n"
     "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND."
 )
-VERSION = backend.VERSION
-SUPPORTED_EXTS = [".txt", ".md", ".markdown", ".pdf", ".docx", ".docm", ".doc", ".rtf"]
-FILE_TYPES = [
-    ("All supported files", " ".join(f"*{e}" for e in SUPPORTED_EXTS)),
-    ("Plain text / Markdown", "*.txt *.md *.markdown"),
-    ("PDF", "*.pdf"),
-    ("Word", "*.docx *.docm *.doc"),
-    ("RTF", "*.rtf"),
-    ("All files", "*.*"),
-]
-
 
 
 # ---------------------------------------------------------------------------
@@ -656,14 +642,14 @@ class DichApp:
         body.rowconfigure(0, weight=1)
 
         self.source_pane = TextPane(
-            body, f"Source — {SOURCE_LANGUAGE}",
-            placeholder=f"Paste {SOURCE_LANGUAGE} text here, or open a file…",
+            body, f"Source — {backend.SOURCE_LANGUAGE}",
+            placeholder=f"Paste {backend.SOURCE_LANGUAGE} text here, or open a file…",
         )
         self.source_pane.grid(row=0, column=0, sticky="nsew",
                               padx=(0, theme.SPACE_3))
 
         self.target_pane = TextPane(
-            body, f"Translation — {TARGET_LANGUAGE}", editable=False,
+            body, f"Translation — {backend.TARGET_LANGUAGE}", editable=False,
             placeholder="Translation appears here", markdown=True,
         )
         self.target_pane.grid(row=0, column=1, sticky="nsew",
@@ -704,13 +690,13 @@ class DichApp:
         body.rowconfigure(0, weight=1)
 
         self.transcript_pane = TextPane(
-            body, f"Transcript — {SOURCE_LANGUAGE}", editable=False, placeholder="Transcript appears here"
+            body, f"Transcript — {backend.SOURCE_LANGUAGE}", editable=False, placeholder="Transcript appears here"
         )
         self.transcript_pane.grid(row=0, column=0, sticky="nsew",
                                   padx=(0, theme.SPACE_3))
 
         self.speech_translation_pane = TextPane(
-            body, f"Translation — {TARGET_LANGUAGE}", editable=False,
+            body, f"Translation — {backend.TARGET_LANGUAGE}", editable=False,
             placeholder="Translation appears here", markdown=True,
         )
         self.speech_translation_pane.grid(row=0, column=1, sticky="nsew",
@@ -735,8 +721,8 @@ class DichApp:
         self._section(form, "Model", row=0)
 
         self.model_var = tk.StringVar(value=backend.MODEL_NAME)
-        self.source_var = tk.StringVar(value=SOURCE_LANGUAGE)
-        self.target_var = tk.StringVar(value=TARGET_LANGUAGE)
+        self.source_var = tk.StringVar(value=backend.SOURCE_LANGUAGE)
+        self.target_var = tk.StringVar(value=backend.TARGET_LANGUAGE)
 
         fields = [
             ("Model", self.model_var),
@@ -1069,7 +1055,7 @@ class DichApp:
     def _check_server(self):
         self.health_dot.configure(foreground=YELLOW)
         self.health_text.configure(text="checking…")
-        self.worker.run(is_server_ready, on_success=self._on_server_checked)
+        self.worker.run(health_check, on_success=self._on_server_checked)
 
     def _on_server_checked(self, info: dict):
         model_short = (info.get("model") or "").split("/")[-1]
@@ -1199,7 +1185,7 @@ class DichApp:
 
         initial = "dich-translation.txt"
         if self.current_file:
-            initial = f"{self.current_file.stem}.{TARGET_LANGUAGE.lower()}.txt"
+            initial = f"{self.current_file.stem}.{backend.TARGET_LANGUAGE.lower()}.txt"
         path = filedialog.asksaveasfilename(
             title="Save translation",
             initialfile=initial,
@@ -1219,7 +1205,7 @@ class DichApp:
     def open_audio(self):
         """Transcribe an audio file, then translate it with accumulating context."""
         try:
-            import speech_engine
+            from . import speech_engine
         except ImportError:
             messagebox.showerror(
                 "Speech dependencies missing",
@@ -1432,7 +1418,7 @@ class DichApp:
         self._stop_memory_poll()
         self.status.reset()
         try:
-            import speech_engine
+            from . import speech_engine
             speech_engine.stop_mic_stream()
         except ImportError:
             pass
@@ -1457,7 +1443,7 @@ class DichApp:
         """
         import time
         try:
-            import speech_engine
+            from . import speech_engine
         except ImportError:
             return
 
@@ -1562,7 +1548,7 @@ class DichApp:
     def _on_close(self):
         self.recording = False
         try:
-            import speech_engine
+            from . import speech_engine
             speech_engine.stop_mic_stream()
         except Exception:  # noqa: BLE001
             pass
@@ -1583,18 +1569,8 @@ def main():
     # import so importing backend never touches the filesystem.
     backend.init_config()
     root = tk.Tk()
-    app = DichApp(root)
-
-    def on_quit():
-        app.recording = False
-        try:
-            import speech_engine
-            speech_engine.stop_mic_stream()
-        except Exception:  # noqa: BLE001 - quitting must not raise
-            pass
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_quit)
+    # __init__ wires WM_DELETE_WINDOW to _on_close (stop mic, then destroy).
+    DichApp(root)
     root.mainloop()
 
     # The semaphore tracker warns at shutdown about objects leaked by the audio

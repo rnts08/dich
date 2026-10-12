@@ -5,7 +5,7 @@ context accumulates, so its accounting is worth pinning down without a model.
 """
 import pytest
 
-import backend
+from dich import backend
 
 
 @pytest.fixture()

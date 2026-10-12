@@ -5,7 +5,7 @@ Vietnamese → English translator, running a local MLX model.
 ## Running
 
 ```bash
-.venv/bin/python3 ui.py
+.venv/bin/python3 -m dich
 ```
 
 The model loads in-process and stays resident, so there is no separate server
@@ -48,8 +48,8 @@ Everything the app owns sits under `~/.config/dich`:
 
 The model cache is redirected there at import time via `HF_HUB_CACHE`, before
 HuggingFace is loaded, because that library reads the variables once at import.
-An existing `config.json` sitting beside the code is copied across on first run
-so a configured install keeps its settings.
+The bundled `dich/config.json` seed is copied across on first run so a
+configured checkout keeps its settings.
 
 Both were verified to load with the network disabled, so a second run does not
 re-download. Set `DICH_HOME` to relocate them — useful for isolating a second
@@ -62,11 +62,13 @@ time that model is asked for.
 
 | Path | Purpose |
 |---|---|
-| `ui.py` | Tkinter app: Translate / Speech / Settings tabs |
-| `backend.py` | text extraction, prompt strategies, cache, engine, contextual translation |
-| `speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
-| `VERSION` | single source of truth for the version |
-| `config.json` | first-run seed; the live copy lives at `~/.config/dich` |
+| `dich/__main__.py` | entry point — `python -m dich` starts the app |
+| `dich/ui.py` | Tkinter app: Translate / Speech / Settings tabs |
+| `dich/backend.py` | text extraction, prompt strategies, cache, engine, contextual translation |
+| `dich/speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
+| `dich/theme.py` | palette and shared widget styles |
+| `dich/VERSION` | single source of truth for the version |
+| `dich/config.json` | first-run seed; the live copy lives at `~/.config/dich` |
 | `dev/bump_version.py` | bumps patch/minor, commits, and tags |
 | `dev/regen_goldens.py` | regenerates the golden translation files |
 | `tests/` | pytest suite: unit, Tk, and `model`-marked golden tests |

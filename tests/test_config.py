@@ -71,7 +71,7 @@ def test_import_creates_nothing(tmp_path):
     out = _probe(tmp_path, """
 import os
 from pathlib import Path
-import backend  # noqa: F401
+import dich.backend  # noqa: F401
 print("clean" if not Path(os.environ["DICH_HOME"]).exists() else "dirty")
 """)
     assert out == "clean"
@@ -81,7 +81,7 @@ def test_init_config_creates_and_migrates(tmp_path):
     out = _probe(tmp_path, """
 import os
 from pathlib import Path
-import backend
+import dich.backend as backend
 backend.init_config()
 home = Path(os.environ["DICH_HOME"])
 print("config:", (home / "config.json").exists())
@@ -92,17 +92,17 @@ print("models:", (home / "models").is_dir())
 
 def test_resource_path_resolves_version(backend):
     assert backend.resource_path("VERSION") == backend.VERSION_FILE
-    version = ( _REPO / "VERSION").read_text(encoding="utf-8").strip()
+    version = (_REPO / "dich" / "VERSION").read_text(encoding="utf-8").strip()
     assert backend.get_version() == version
 
 
 def test_resource_path_when_frozen(backend, tmp_path, monkeypatch):
     internal = tmp_path / "_internal"
-    internal.mkdir()
-    (internal / "VERSION").write_text("9.9.9", encoding="utf-8")
+    (internal / "dich").mkdir(parents=True)
+    (internal / "dich" / "VERSION").write_text("9.9.9", encoding="utf-8")
     monkeypatch.setattr(backend, "IS_FROZEN", True)
     monkeypatch.setattr(backend.sys, "_MEIPASS", str(internal), raising=False)
-    assert backend.resource_path("VERSION") == internal / "VERSION"
+    assert backend.resource_path("VERSION") == internal / "dich" / "VERSION"
 
 
 def test_init_config_reads_disk_and_refreshes_globals(backend, tmp_path, monkeypatch):

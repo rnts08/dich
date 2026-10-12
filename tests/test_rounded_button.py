@@ -11,7 +11,7 @@ pytestmark = pytest.mark.display
 
 
 def _button(root, clicks=None):
-    import theme
+    from dich import theme
     recorded = [] if clicks is None else clicks
     button = theme.RoundedButton(
         root, text="Open", command=lambda: recorded.append(1))

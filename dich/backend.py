@@ -51,14 +51,21 @@ CONFIG_PATH = CONFIG_ROOT / "config.json"
 
 # PyInstaller freezes the app into a temp extraction dir where __file__ points
 # at the packed module, not the source tree. Bundled data files (VERSION, the
-# seed config.json) sit under sys._MEIPASS there and beside the source in a
-# normal checkout, so every data lookup goes through resource_path().
+# seed config.json) sit in the dich/ dir under sys._MEIPASS there and beside
+# the source in a normal checkout, so every data lookup goes through
+# resource_path().
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 
 
 def resource_path(name: str) -> Path:
-    """Resolve a file bundled with the app, frozen or not."""
-    base = Path(sys._MEIPASS) if IS_FROZEN else Path(__file__).parent
+    """
+    Resolve a file bundled with the app, frozen or not.
+
+    The package keeps its name inside the frozen extraction dir, so data
+    collected as package data lands in <_MEIPASS>/dich/ exactly where it
+    sits (dich/) in a checkout.
+    """
+    base = (Path(sys._MEIPASS) / "dich") if IS_FROZEN else Path(__file__).parent
     return base / name
 
 
@@ -1253,10 +1260,6 @@ def health_check() -> Dict[str, Any]:
     else:
         info["reason"] = "not loaded yet (loads on first translation)"
     return info
-
-
-# Alias used by the UI.
-is_server_ready = health_check
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@ import pytest
 @pytest.fixture()
 def backend():
     """The backend module, with config initialised once in the sandbox."""
-    import backend as b
+    from dich import backend as b
     b.init_config()   # first call loads; later calls are a flag check
     return b
 

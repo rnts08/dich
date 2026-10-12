@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import backend  # noqa: E402
+from dich import backend  # noqa: E402
 
 GOLDEN_DIR = ROOT / "tests" / "golden"
 

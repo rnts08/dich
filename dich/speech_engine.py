@@ -54,7 +54,6 @@ SAMPLE_RATE = 16000
 # catches up whenever the speaker pauses. Keeping up is why `small` is the
 # live default rather than `medium`.
 WINDOW_SECONDS = 2.0
-SILENCE_SECONDS = 0.8         # trailing silence that ends an utterance
 MIN_SENTENCE_CHARS = 8        # drop tiny fragments ("uh", "vâng" alone)
 # Segments to accumulate before flushing. Whisper returns several segments per
 # window; without a cap, continuous speech parks everything in _pending.
@@ -460,10 +459,6 @@ def _strip_hallucinations(text: str) -> str:
     parts = re.split(r"(?<=[.!?])\s+|\n+", text)
     kept = [p for p in parts if p.strip() and not _is_hallucination(p)]
     return " ".join(kept).strip()
-
-
-def _prompt_hint() -> str:
-    return ""
 
 
 # ---------------------------------------------------------------------------

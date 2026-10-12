@@ -22,7 +22,7 @@ jobs:
         run: pip install -r requirements-dev.txt httpx pypdf python-docx striprtf numpy
 
       - name: Byte-compile every module
-        run: python -m compileall -q ui.py backend.py speech_engine.py theme.py dev
+        run: python -m compileall -q dich dev
 
       - name: Unit tests
         run: pytest -m "not model" -q
