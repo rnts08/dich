@@ -1,8 +1,10 @@
 """Test bootstrap.
 
 `backend` reads DICH_HOME and may write config at import time, so the redirect
-must happen before any test module imports it. Everything lands in a throwaway
-directory; the real ~/.config/dich is never touched.
+must happen before any test module imports it. Config lands in a throwaway
+directory; the real ~/.config/dich config is never touched. The model cache
+stays pointed at the real one so the `model`-marked golden tests can load the
+weights already downloaded here.
 """
 import os
 import sys
@@ -14,7 +16,13 @@ sys.path.insert(0, str(_REPO))
 
 _SANDBOX = Path(tempfile.mkdtemp(prefix="dich-tests-"))
 os.environ["DICH_HOME"] = str(_SANDBOX / "dich")
-os.environ.setdefault("HF_HUB_CACHE", str(_SANDBOX / "hf"))
+# DICH_HOME sandboxes the config, which backend.py would follow by redirecting
+# the model cache into the sandbox too. Point the model cache at the real one
+# instead: non-model tests never load a model, and the model-marked golden
+# tests need the 8 GB of weights that are already on this machine.
+os.environ.setdefault(
+    "HF_HUB_CACHE", str(Path.home() / ".config" / "dich" / "models"))
+os.environ.setdefault("HF_HOME", str(Path.home() / ".config" / "dich"))
 
 import pytest
 
