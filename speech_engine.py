@@ -343,7 +343,7 @@ class SpeechEngine:
         """
         import numpy as np
 
-        if len(samples) == 0:
+        if samples is None or len(samples) == 0:
             return False
         tail = samples[int(len(samples) * (1.0 - TRAILING_SHARE)):]
         if len(tail) == 0:

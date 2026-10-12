@@ -43,6 +43,13 @@ def test_empty_trailing_samples_are_not_silence():
     assert not eng._trailing_silence(np.array([], dtype=np.float32))
 
 
+def test_no_samples_yet_are_not_silence():
+    # _last_samples is None until the first window is transcribed; judging
+    # trailing silence on it used to raise TypeError.
+    eng = speech_engine.SpeechEngine()
+    assert not eng._trailing_silence(None)
+
+
 def test_uniform_audio_is_not_trailing_silence():
     eng = speech_engine.SpeechEngine()
     assert not eng._trailing_silence(np.ones(32000, dtype=np.float32) * 0.3)
