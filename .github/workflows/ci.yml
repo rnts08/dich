@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install test dependencies
+        # No mlx / faster-whisper / sounddevice: every model and audio import
+        # in the codebase is lazy, so the suite runs without them. The
+        # `model`-marked golden tests are deselected below — they need 8 GB
+        # of weights and run locally.
+        run: pip install -r requirements-dev.txt httpx pypdf python-docx striprtf numpy
+
+      - name: Byte-compile every module
+        run: python -m compileall -q ui.py backend.py speech_engine.py theme.py dev
+
+      - name: Unit tests
+        run: pytest -m "not model" -q
