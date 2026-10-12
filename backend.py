@@ -408,21 +408,55 @@ MARKDOWN_INSTRUCTION = (
 )
 
 
+def _split_oversized(part: str, char_limit: int) -> List[str]:
+    """Split one paragraph longer than the limit, cutting on sentence boundaries.
+
+    Keeps every character: the pieces join back to the exact input. A single
+    sentence that is itself over the limit is hard-split, since there is no
+    softer place to cut.
+    """
+    if len(part) <= char_limit:
+        return [part]
+    pieces = re.split(r"(?<=[.!?…])(\s+)", part)  # separators kept in the list
+    out: List[str] = []
+    current = ""
+    for piece in pieces:
+        if piece is None:
+            continue
+        while len(piece) > char_limit:
+            if current:
+                out.append(current)
+                current = ""
+            out.append(piece[:char_limit])
+            piece = piece[char_limit:]
+        if current and len(current) + len(piece) > char_limit:
+            out.append(current)
+            current = piece
+        else:
+            current += piece
+    if current:
+        out.append(current)
+    return out
+
+
 def _split_batches(text: str, size: int = BATCH_SIZE, char_limit: int = BATCH_CHAR_LIMIT) -> List[str]:
     """Split text into paragraph-aligned batches, keeping each under a size cap."""
     paragraphs = re.split(r"(\n\s*\n)", text)  # separators are kept in the list
-    if len(paragraphs) <= size:
+    if len(paragraphs) <= size and len(text) <= char_limit:
         return [text]
     chunks, current = [], []
     count, current_len = 0, 0
     for part in paragraphs:
-        if count >= size or (current_len + len(part) > char_limit and current):
-            chunks.append("".join(current))
-            current, count, current_len = [], 0, 0
-        current.append(part)
-        if part.strip():
-            count += 1
-            current_len += len(part)
+        # An oversized paragraph used to ride through whole, because neither
+        # loop condition could split inside a part.
+        for piece in _split_oversized(part, char_limit):
+            if count >= size or (current_len + len(piece) > char_limit and current):
+                chunks.append("".join(current))
+                current, count, current_len = [], 0, 0
+            current.append(piece)
+            if piece.strip():
+                count += 1
+                current_len += len(piece)
     if current:
         chunks.append("".join(current))
     return chunks
