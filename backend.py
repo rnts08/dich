@@ -1243,7 +1243,6 @@ if __name__ == "__main__":
         "cache": cache_stats(),
         "config": {
             "model": MODEL_NAME,
-            "port": PORT,
             "source": SOURCE_LANGUAGE,
             "target": TARGET_LANGUAGE,
         },
