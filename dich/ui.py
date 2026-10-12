@@ -1093,41 +1093,49 @@ class DichApp:
         windows, so if the model falls behind this is where it shows up first.
         A healthy pipeline keeps it near zero — the live mic measures about 1.5
         seconds — and a lagging one grows without limit.
+
+        Never raises: open_audio() runs the first tick synchronously, so a
+        readout error here once aborted file transcription before it started.
         """
         if not self._memory_polling:
             return
+        try:
+            if speech_engine is not None:
+                usage = speech_engine.buffer_usage()
+                behind = usage.get("behind_by", 0.0)
+                dropped = usage.get("dropped_seconds", 0.0)
+                windowed = usage.get("window_seconds", 0.0)
 
-        if speech_engine is not None:
-            usage = speech_engine.buffer_usage()
-            behind = usage.get("behind_by", 0.0)
-            dropped = usage.get("dropped_seconds", 0.0)
+                # Be honest about being behind rather than showing a countdown of
+                # zero, which reads as "imminent" when nothing is in fact coming.
+                if behind > 0.5:
+                    mic_line = f"listening… · {behind:.0f}s behind, catching up"
+                    bar_line = (
+                        f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s "
+                        f"· {behind:.0f}s behind"
+                    )
+                    mic_colour = YELLOW
+                else:
+                    mic_line = (
+                        f"listening… · next transcript in "
+                        f"{max(0.0, windowed - usage['seconds']):.1f}s"
+                    )
+                    bar_line = (
+                        f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s"
+                    )
+                    mic_colour = GREEN
 
-            # Be honest about being behind rather than showing a countdown of
-            # zero, which reads as "imminent" when nothing is in fact coming.
-            if behind > 0.5:
-                mic_line = f"listening… · {behind:.0f}s behind, catching up"
-                bar_line = (
-                    f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s "
-                    f"· {behind:.0f}s behind"
-                )
-                mic_colour = YELLOW
-            else:
-                mic_line = (
-                    f"listening… · next transcript in "
-                    f"{max(0.0, usage['window_seconds'] - usage['seconds']):.1f}s"
-                )
-                bar_line = f"buffer {_human(usage['bytes'])} · {usage['seconds']:.1f}s"
-                mic_colour = GREEN
+                if dropped > 0:
+                    mic_line += f" · {dropped:.0f}s dropped"
+                    bar_line += f" · {dropped:.0f}s DROPPED — raise the buffer ceiling"
 
-            if dropped > 0:
-                mic_line += f" · {dropped:.0f}s dropped"
-                bar_line += f" · {dropped:.0f}s DROPPED — raise the buffer ceiling"
-
-            self.status.set_memory(bar_line)
-            if self.recording:
-                self.mic_status.configure(text=mic_line, foreground=mic_colour)
-
-        self.root.after(500, self._poll_memory)
+                self.status.set_memory(bar_line)
+                if self.recording:
+                    self.mic_status.configure(text=mic_line, foreground=mic_colour)
+        except Exception:  # noqa: BLE001 - a readout must not kill its subject
+            traceback.print_exc()
+        finally:
+            self.root.after(500, self._poll_memory)
 
     def _start_memory_poll(self):
         self._memory_polling = True

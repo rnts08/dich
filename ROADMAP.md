@@ -129,6 +129,14 @@ argument for the tests in Milestone 0.5.
   the live transcript. Recording now stops first.
 - **Clearing the speech panes while recording** stopped the buffer readout,
   removing the countdown from under someone still listening.
+- **Opening an audio file did nothing at all.** The idle buffer report lacked
+  `window_seconds`, so `_poll_memory`'s first tick — run synchronously inside
+  `open_audio()` — raised `KeyError` before `worker.run(transcribe_file…)` was
+  ever reached: no transcription, no buffer line, status stuck at
+  "transcribing…". Introduced with the honest-countdown fix. The idle schema
+  now mirrors the live engine's, the readout can no longer raise out of its
+  caller, and both layers carry regression tests. Reported by the user after
+  0.2.39; file transcription and the live mic were both re-verified end to end.
 - **`markdown` was a dead dependency**, removed from the install line.
 - The stored `mic_model` was `medium`, which falls behind at a 2-second window,
   while the README documented `small`. Aligned — and in 0.2.26 the same value

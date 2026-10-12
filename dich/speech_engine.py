@@ -729,10 +729,25 @@ def drain_final_sentences() -> list[str]:
     return _engine.drain_final_sentences()
 
 
+# The idle report must carry every key the live engine reports. The UI reads
+# window_seconds unconditionally, and a shorter dict here made the memory
+# readout crash — inside open_audio(), before transcription was dispatched.
+_IDLE_USAGE = {
+    "samples": 0,
+    "seconds": 0.0,
+    "bytes": 0,
+    "blocks": 0,
+    "dropped_seconds": 0.0,
+    "window_seconds": 0.0,
+    "buffer_max_seconds": 0.0,
+    "behind_by": 0.0,
+}
+
+
 def buffer_usage() -> dict:
     """Buffer memory held by the active capture, or zeros when idle."""
     if _engine is None:
-        return {"samples": 0, "seconds": 0.0, "bytes": 0, "blocks": 0}
+        return dict(_IDLE_USAGE)
     return _engine.buffer_usage()
 
 
