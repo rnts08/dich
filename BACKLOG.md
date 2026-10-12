@@ -1,6 +1,6 @@
 # Dịch — Backlog
 
-Last reviewed: 2026-10-11 · version **0.2.17** · branch `main`
+Last reviewed: 2026-10-12 · version **0.2.35** · branch `main`
 
 This is the working list of what is left, ordered by priority rather than by
 milestone. `ROADMAP.md` keeps the longer-horizon shape; this file is what to pick
@@ -24,32 +24,22 @@ Working today, verified against the code rather than assumed:
   process to run.
 - **Menu bar, design tokens, rounded controls, markdown rendering, buffer-memory
   readout, licence and About.**
+- **Tests** — an 80-case suite (unit + golden-file quality gate) under `tests/`,
+  with CI running it and `py_compile` on every push.
 
-Not working, or not present: **no tests of any kind**, **no packaging**, **no
-streaming output**, and the microphone has never been confirmed working with a
-human speaker — only with recorded audio played through speakers.
+Not working, or not present: **no packaging**, **no streaming output**, and the
+microphone has never been confirmed working with a human speaker — only with
+recorded audio played through speakers.
 
 ---
 
 ## P0 — blocking
 
-### `test/` suite
-Nothing tests anything. Several bugs shipped that a test would have caught: the
-`<end_of_turn>` runaway, the UI freeze on pointer motion, and the sentence flush
-that never fired. Each cost a debugging cycle.
-
-- [ ] Cache key: a changed character must invalidate; unchanged input must hit
-- [ ] `_align_stop_tokens`: a short sentence must not return 6000 characters
-- [ ] Each extractor: `pdf/docx/docm/doc/rtf/md/txt` → expected text
-- [ ] Prompt strategy switch: `content` list shape for TranslateGemma, plain
-  string plus system prompt otherwise
-- [ ] Sentence assembly (`_ingest_segments`): three flush triggers, relative
-  trailing silence, hallucination and repetition filters
-- [ ] `RoundedButton`: pointer events must not loop (the freeze)
-- [ ] Golden-file translation tests to catch quality regressions
-
-### `py_compile` gate in CI
-- [ ] GitHub Action that runs the suite and `py_compile` on every push
+None open. The suite and CI gate landed in 0.2.26–0.2.35, closing Milestone 0.5
+— see `ROADMAP.md`. Writing the first sentence-assembly test immediately found
+two more shipped bugs (the punctuation flush trigger had never fired, and
+`_trailing_silence(None)` crashed), which is the argument for the suite in one
+sentence.
 
 ---
 

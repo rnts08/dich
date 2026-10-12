@@ -12,6 +12,26 @@ The model loads in-process and stays resident, so there is no separate server
 process to start. By default it loads when the app starts; a Settings checkbox
 switches that to load-on-first-translation instead.
 
+## Testing
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python3 -m pytest                 # full suite, incl. the model goldens
+.venv/bin/python3 -m pytest -m "not model"  # fast subset — what CI runs
+```
+
+Tests sandbox their config (`DICH_HOME` points at a temp dir), so the real
+`~/.config/dich` is never touched. The `model`-marked golden files pin fixed
+translations and skip when the weights are not cached; after an *intended*
+output change, regenerate them and review the diff — that review is the gate:
+
+```bash
+.venv/bin/python3 dev/regen_goldens.py
+```
+
+CI (`.github/workflows/ci.yml`) runs the fast subset plus `py_compile` on every
+push, on macOS, in about a minute.
+
 ## Where things live
 
 Everything the app owns sits under `~/.config/dich`:
@@ -48,6 +68,9 @@ time that model is asked for.
 | `VERSION` | single source of truth for the version |
 | `config.json` | first-run seed; the live copy lives at `~/.config/dich` |
 | `dev/bump_version.py` | bumps patch/minor, commits, and tags |
+| `dev/regen_goldens.py` | regenerates the golden translation files |
+| `tests/` | pytest suite: unit, Tk, and `model`-marked golden tests |
+| `.github/workflows/ci.yml` | CI: suite + `py_compile` on every push |
 | `test_data/` | sample documents and a Vietnamese speech recording (gitignored) |
 
 ## Translate tab

@@ -1,8 +1,9 @@
 # Dịch — Roadmap
 
-Current version: **0.2.x**. Speech-to-text is working and is no longer the
-constraint; what stands between this and a stand-alone app is **testing,
-packaging, and confirming the microphone with a real speaker**.
+Current version: **0.2.35**. Speech-to-text is working and is no longer the
+constraint; testing is done (Milestone 0.5). What stands between this and a
+stand-alone app is **packaging and confirming the microphone with a real
+speaker**.
 
 `BACKLOG.md` is the prioritised list of what to pick up next. This file keeps
 the shape of where the project is going, and why.
@@ -57,16 +58,18 @@ The point at which this stops being "run Python in a terminal".
 - [ ] Batch-translate a folder; clipboard / selected-text translation
 - [ ] Quality scoring against the reference, so weak output is flagged
 
-## Milestone 0.5 — Confidence
+## Milestone 0.5 — Confidence — *done*
 
-The largest gap. Nothing currently tests anything, and three bugs shipped that a
-test would have caught.
+The largest gap, closed in 0.2.26–0.2.35: 80 tests under `tests/`, CI on every
+push, and a golden-file quality gate. Writing them found two more shipped bugs —
+the punctuation flush trigger had never fired, and `_trailing_silence(None)`
+crashed — which is the whole argument for the suite.
 
-- [ ] Unit tests: cache key invalidation, `<end_of_turn>` stop handling, every
+- [x] Unit tests: cache key invalidation, `<end_of_turn>` stop handling, every
       extractor, the prompt-strategy switch, sentence assembly and its filters
-- [ ] `RoundedButton` pointer events must not loop (the UI freeze)
-- [ ] Golden-file translation tests for quality regressions
-- [ ] CI running the suite and `py_compile` on every push
+- [x] `RoundedButton` pointer events must not loop (the UI freeze)
+- [x] Golden-file translation tests for quality regressions
+- [x] CI running the suite and `py_compile` on every push
 
 ## Milestone 0.6 — Beyond Vietnamese → English
 
@@ -128,4 +131,27 @@ argument for the tests in Milestone 0.5.
   removing the countdown from under someone still listening.
 - **`markdown` was a dead dependency**, removed from the install line.
 - The stored `mic_model` was `medium`, which falls behind at a 2-second window,
-  while the README documented `small`. Aligned.
+  while the README documented `small`. Aligned — and in 0.2.26 the same value
+  was found still wrong in the seed `config.json` and in `DEFAULT_CONFIG`, so
+  all three sources now agree.
+
+### Found by the first test suite (0.2.20–0.2.35)
+
+- **The punctuation sentence-flush trigger never fired.** `_is_complete` passed
+  `.?!。！？…` to `endswith()` as one suffix, which checks for text ending in
+  that entire sequence — never. Every sentence-ending period was invisible; only
+  the Vietnamese end-word, segment-count and window-end triggers ever emitted.
+- **`_on_finalized` crashed on every finished audio file** — a stray duplicated
+  `worker.run(...)` block referenced locals that do not exist in its scope, and
+  Tk's exception reporter swallowed the NameError.
+- **`python backend.py` crashed on undefined `PORT`** — a leftover from the
+  server era.
+- **Documents with few paragraphs ignored `char_limit`** — the batching fast
+  path returned the whole text as one prompt regardless of length, so a long
+  single-paragraph document was truncated by the TranslateGemma context.
+- **`_render_speech` called `root.after()` from a raw thread** — the exact
+  pattern `Worker.post` exists to prevent.
+- **`_trailing_silence(None)` crashed** when a pending utterance was judged
+  before the first window was transcribed.
+- **The buffer-overflow logic was unreachable** — trapped inside the `start()`
+  closure, now extracted as `_on_audio` and covered by tests.
