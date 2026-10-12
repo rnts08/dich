@@ -2,6 +2,8 @@ name: ci
 
 on:
   push:
+    branches: [main]   # not tags: --follow-tags would otherwise run the same
+                       # job twice for the commit the tag points at
   pull_request:
 
 jobs:
@@ -18,7 +20,8 @@ jobs:
         # No mlx / faster-whisper / sounddevice: every model and audio import
         # in the codebase is lazy, so the suite runs without them. The
         # `model`-marked golden tests are deselected below — they need 8 GB
-        # of weights and run locally.
+        # of weights and run locally. No `cache: pip` either: it requires a
+        # requirements.txt/pyproject.toml to hash and saves ~10 s here.
         run: pip install -r requirements-dev.txt httpx pypdf python-docx striprtf numpy
 
       - name: Byte-compile every module
