@@ -1388,7 +1388,7 @@ class DichApp:
             if hasattr(speech_engine, "FILE_MODEL")
             else speech_engine.LIVE_MODEL,
             on_success=self._on_audio_transcribed,
-            on_error=self._on_speech_error,
+            on_error=self.on_file_transcription_error,
         )
 
     def _on_audio_transcribed(self, result):
@@ -1618,6 +1618,25 @@ class DichApp:
         self.status.set_stats(
             f"{stats['refined']} refined · {stats['provisional']} provisional"
         )
+
+    def on_file_transcription_error(self, exc: Exception, tb: str):
+        """
+        transcribe_file() failed — decode, model load/download or transcription.
+
+        Every piece of state open_audio() set must come back down: the memory
+        poll it started, the "transcribing…" label, the pulsing busy bar and
+        the watch cursor. Leaving any of them up made a single bad file look
+        like an eternally running job, and the generic "translation failed"
+        text named the wrong stage entirely.
+        """
+        self._file_transcribing = False
+        self._stop_memory_poll()
+        self.root.config(cursor="")
+        self.mic_status.configure(text="transcription failed", foreground=RED)
+        self.status.set_stats("transcription failed", RED)
+        self.status.set_hint(str(exc))
+        self.speech_translation_pane.append(f"[transcription failed: {exc}]\n\n")
+        print(tb)
 
     def _on_speech_error(self, exc: Exception, tb: str):
         self.speech_translation_pane.append(f"[translation failed: {exc}]\n\n")
