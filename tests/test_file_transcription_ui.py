@@ -158,6 +158,7 @@ def test_open_audio_forwards_progress_through_the_worker(monkeypatch):
 
     app = SimpleNamespace(
         recording=False,
+        _file_transcribing=False,
         audio_path=None,
         mic_status=SimpleNamespace(configure=lambda **kw: None),
         status=SimpleNamespace(set_busy=lambda *a, **k: None, set_hint=lambda t: None),
@@ -190,6 +191,44 @@ def test_open_audio_forwards_progress_through_the_worker(monkeypatch):
     progress("transcribe", 10)
     assert posted and posted[0][0] == app._on_file_progress
     assert posted[0][1] == ("transcribe", 10)
+
+
+def test_recording_refused_while_a_file_job_runs(monkeypatch):
+    """Two speech jobs at once clobber each other's panes and poll timers."""
+
+    def probe():
+        raise AssertionError("device probing must not happen during a file job")
+
+    monkeypatch.setattr(ui, "speech_engine", SimpleNamespace(list_input_devices=probe))
+    events = []
+    app = SimpleNamespace(
+        _mic_opening=False,
+        recording=False,
+        _file_transcribing=True,
+        status=SimpleNamespace(set_hint=lambda t: events.append(("hint", t))),
+    )
+
+    ui.DichApp.start_recording(app)
+
+    assert events == [("hint", "a file is being transcribed — wait for it to finish")]
+
+
+def test_second_file_open_refused_while_busy(monkeypatch):
+    """A second open must not start a second decode + model load."""
+
+    def dialog(**kw):
+        raise AssertionError("the file dialog must not open during a file job")
+
+    monkeypatch.setattr(ui.filedialog, "askopenfilename", dialog)
+    events = []
+    app = SimpleNamespace(
+        _file_transcribing=True,
+        status=SimpleNamespace(set_hint=lambda t: events.append(("hint", t))),
+    )
+
+    ui.DichApp.open_audio(app)
+
+    assert events == [("hint", "a file is already being transcribed")]
 
 
 def test_file_error_names_the_failure_as_transcription():

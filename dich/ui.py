@@ -1351,6 +1351,9 @@ class DichApp:
 
     def open_audio(self):
         """Transcribe an audio file, then translate it with accumulating context."""
+        if self._file_transcribing:
+            self.status.set_hint("a file is already being transcribed")
+            return
         if speech_engine is None:
             messagebox.showerror(
                 "Speech dependencies missing",
@@ -1525,6 +1528,9 @@ class DichApp:
 
     def start_recording(self):
         if self._mic_opening or self.recording:
+            return
+        if self._file_transcribing:
+            self.status.set_hint("a file is being transcribed — wait for it to finish")
             return
         if speech_engine is None:
             messagebox.showerror(
