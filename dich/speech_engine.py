@@ -30,7 +30,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Callable, Iterator, List, Optional
 
 import numpy as np
 
@@ -616,6 +616,7 @@ def load_audio(
     sample_rate: int = SAMPLE_RATE,
     start: float = 0.0,
     duration: Optional[float] = None,
+    on_progress: Optional[Callable[[int], None]] = None,
 ) -> np.ndarray:
     """
     Decode any audio file to a mono float32 array at `sample_rate`.
@@ -624,6 +625,9 @@ def load_audio(
     decode_audio() calls av.open(metadata_errors=...), which the installed PyAV
     rejects. Decoding at load time also lets a chunk of a long recording be
     read without holding the whole thing in memory.
+
+    `on_progress` receives decoded percent (0-100) as frames are read, so a
+    minute-long file is not a blank stare.
     """
     import av
 
@@ -631,6 +635,7 @@ def load_audio(
     chunks: List[bytes] = []
     collected = 0.0
     position = 0.0
+    reported = -1
 
     # PyAV renamed/dropped `metadata_errors` across versions. faster-whisper
     # passes it unconditionally and explodes on this stack, so the call is made
@@ -641,6 +646,15 @@ def load_audio(
         container = av.open(path)
 
     with container:
+        # container.duration is in av.time_base units and can be unset (VBR
+        # mp3 and friends); fall back to the stream's own duration.
+        total = None
+        if getattr(container, "duration", None):
+            total = float(container.duration) / av.time_base
+        elif container.streams.audio[0].duration:
+            stream = container.streams.audio[0]
+            total = float(stream.duration) * float(stream.time_base)
+
         for frame in container.decode(container.streams.audio[0]):
             frame_seconds = float(frame.samples) / max(frame.sample_rate, 1)
             if position + frame_seconds <= start:
@@ -650,8 +664,17 @@ def load_audio(
                 pcm = packet.to_ndarray().reshape(-1)
                 chunks.append(pcm.tobytes())
                 collected += len(pcm) / sample_rate
+            position += frame_seconds
+            if on_progress is not None and total:
+                percent = min(100, int(position / total * 100))
+                if percent != reported:
+                    reported = percent
+                    on_progress(percent)
             if duration is not None and collected >= duration:
                 break
+
+    if on_progress is not None and reported != 100:
+        on_progress(100)
 
     audio = np.frombuffer(b"".join(chunks), dtype=np.int16)
     return audio.astype(np.float32) / 32768.0
@@ -689,6 +712,7 @@ def transcribe_file(
     path: str,
     model_name: str = FILE_MODEL,
     max_seconds: Optional[float] = None,
+    on_progress: Optional[Callable[[str, Optional[int]], None]] = None,
 ) -> TranscriptionResult:
     """
     Transcribe an audio file to Vietnamese.
@@ -696,11 +720,26 @@ def transcribe_file(
     Defaults to the accurate-but-slow model: a file is not racing a live
     speaker, so quality wins. Pass LIVE_MODEL when a long recording has to
     finish quickly.
+
+    `on_progress(phase, percent)` reports every stage that can block for a long
+    time: "decode" (percent of the file read), "model" (percent None — first
+    use downloads gigabytes) and "transcribe" (percent of the audio consumed).
     """
-    audio = load_audio(path, duration=max_seconds)
+    report = on_progress or (lambda phase, percent: None)
+
+    report("decode", 0)
+    audio = load_audio(
+        path,
+        duration=max_seconds,
+        on_progress=lambda percent: report("decode", percent),
+    )
+    report("decode", 100)
     logger.info(f"Decoded {path}: {len(audio) / SAMPLE_RATE:.1f}s at {SAMPLE_RATE} Hz")
 
+    report("model", None)
     model = _whisper_model(model_name)
+    report("transcribe", 0)
+
     segments, info = model.transcribe(
         audio,
         language="vi",
@@ -715,11 +754,15 @@ def transcribe_file(
         model=model_name,
         duration=round(len(audio) / SAMPLE_RATE, 1),
     )
+    total = float(getattr(info, "duration", 0.0) or 0.0)
     for seg in segments:
         text = seg.text.strip()
         if text and not _is_hallucination(text):
             result.sentences.append(text)
             result.timings.append((round(seg.start, 2), round(seg.end, 2)))
+        if total > 0:
+            report("transcribe", min(99, int(seg.end / total * 100)))
+    report("transcribe", 100)
     return result
 
 
