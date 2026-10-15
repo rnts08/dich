@@ -50,6 +50,11 @@ os.environ.setdefault(
     str(Path(os.environ.get("DICH_HOME", Path.home() / ".config" / "dich")) / "models"),
 )
 
+try:  # GPU transcription is optional: absent mlx-audio falls back to the CPU
+    from . import mlx_stt
+except ImportError:  # pragma: no cover
+    mlx_stt = None
+
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
@@ -600,8 +605,18 @@ def stop_mic_stream():
 # ---------------------------------------------------------------------------
 
 
-def _whisper_model(name: str):
-    """Build a WhisperModel, with an install hint instead of a raw ImportError."""
+def _whisper_model(name: str, backend: Optional[str] = None):
+    """
+    Build a Whisper model on the configured backend.
+
+    GPU first: the same weights are ~10x faster on MLX (see mlx_stt), which is
+    what lets the accurate model also be the live one. The CPU path stays as
+    the fallback, and is what runs when mlx-audio is absent.
+    """
+    if (backend or _configured_backend()) == "mlx" and mlx_stt is not None:
+        if mlx_stt.available():
+            return mlx_stt.MLXWhisper(name)
+        logger.warning("stt_backend=mlx but no GPU is reachable; using the CPU")
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:
@@ -609,6 +624,41 @@ def _whisper_model(name: str):
             "Speech needs faster-whisper. Install: pip install faster-whisper"
         ) from e
     return WhisperModel(name, device="cpu", compute_type="int8")
+
+
+def stt_backend(config_value: str = "auto", gpu_available: bool = False) -> str:
+    """
+    Which STT backend a config value selects: "mlx" or "ctranslate2".
+
+    "auto" prefers the GPU, because on this machine it is strictly faster and
+    the accuracy/latency tradeoff the CPU forced (small keeps up, turbo does
+    not) does not exist there. An explicit request is honoured even when it
+    cannot run, so the fallback warning is visible rather than silent.
+    """
+    choice = (config_value or "auto").strip().lower()
+    if choice in ("mlx", "gpu"):
+        return "mlx"
+    if choice in ("ctranslate2", "cpu", "faster-whisper"):
+        return "ctranslate2"
+    return "mlx" if gpu_available else "ctranslate2"
+
+
+def _gpu_available() -> bool:
+    try:
+        return mlx_stt is not None and mlx_stt.available()
+    except Exception:  # noqa: BLE001 - a broken probe must not break startup
+        return False
+
+
+def _configured_backend() -> str:
+    choice = "auto"
+    try:
+        from . import backend as _backend
+
+        choice = str(_backend.CONFIG.get("stt_backend", "auto"))
+    except Exception:  # noqa: BLE001 - config is unavailable in some entry points
+        pass
+    return stt_backend(choice, gpu_available=_gpu_available())
 
 
 def load_audio(
@@ -754,7 +804,7 @@ def transcribe_file(
         model=model_name,
         duration=round(len(audio) / SAMPLE_RATE, 1),
     )
-    total = float(getattr(info, "duration", 0.0) or 0.0)
+    total = float(getattr(info, "duration", 0.0) or 0.0) or result.duration
     for seg in segments:
         text = seg.text.strip()
         if text and not _is_hallucination(text):

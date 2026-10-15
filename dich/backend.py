@@ -106,6 +106,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # --- microphone ---
     "mic_device_index": None,  # null = the system default microphone
     "mic_model": "small",  # keeps up with a live speaker at 2s windows
+    # auto -> GPU (mlx) when mlx-audio can reach the GPU, else CPU. Measured on
+    # this machine: large-v3-turbo is 3.1x realtime on the CPU and 31x on the
+    # GPU, so "auto" removes the CPU's accuracy/latency tradeoff.
+    "stt_backend": "auto",
     "refine_every": 6,  # utterances between block re-translations
 }
 

@@ -320,6 +320,7 @@ future debugger needs.
 pip install mlx-lm httpx pypdf python-docx striprtf
 # for speech only:
 pip install sounddevice faster-whisper av numpy
+pip install mlx-audio   # optional: runs the same Whisper weights on the GPU
 ```
 
 `tkinter` ships with Python. `PyPDF2` is accepted as a fallback if `pypdf` is
@@ -327,9 +328,26 @@ absent.
 
 ## Notes
 
-`mlx-audio` 0.5.8 is installed on this machine as a `uv` tool. Its STT cannot
-run `mlx-community/whisper-large-v3-turbo` — it raises `Processor not found.
-Make sure the model was loaded with a HuggingFace processor`, including from its
-own CLI — so it is not used. If it can be made to work it would move
-transcription onto the GPU, which is the real answer to the latency tradeoff
-above rather than trading accuracy for it.
+Speech-to-text runs on the **GPU via `mlx-audio`** when it is installed and a
+Metal GPU is reachable, and on the CPU via `faster-whisper` otherwise. Select
+with `"stt_backend"` in the config: `auto` (default), `mlx`, or `ctranslate2`.
+
+The one trap is the model repo. `mlx-community/whisper-large-v3-turbo` ships
+weights only, so mlx-audio cannot build a `WhisperProcessor` and `get_tokenizer`
+raises `Processor not found. Make sure the model was loaded with a HuggingFace
+processor`. The `-asr-fp16` repos carry `preprocessor_config.json` and the
+tokenizer too, so model ids map to `mlx-community/whisper-<id>-asr-fp16`.
+
+Measured here (same Vietnamese audio, warm):
+
+| | CPU (faster-whisper int8) | GPU (mlx-audio fp16) |
+|---|---|---|
+| large-v3-turbo, 150 s file | 3.1× realtime | **31× realtime** |
+| live 2 s window | small: 1009 ms | turbo: 354 ms |
+| peak RAM | — | turbo 2.2 GB, Qwen3-ASR 2.7 GB |
+
+That is what removes the accuracy-versus-latency tradeoff: the accurate model is
+now also fast enough to run live. Silence is still never sent to the model —
+`SILENCE_FLOOR` in `speech_engine` guards every window, because Whisper on any
+backend invents text (on this machine: gibberish for the CPU path, short phrases
+like "ở đâu?" for the GPU path) when handed a quiet buffer.
