@@ -53,6 +53,74 @@ def test_file_error_clears_busy_state_and_stops_poll():
     assert any("failed" in kw.get("text", "") for kw in mic)
 
 
+def test_empty_result_reports_no_speech():
+    """A file that yields no sentences is named as such, not reported as success."""
+    events = []
+    result = SimpleNamespace(sentences=[], duration=12.0)
+    app = SimpleNamespace(
+        mic_status=SimpleNamespace(configure=lambda **kw: events.append(("mic", kw))),
+        status=SimpleNamespace(
+            set_stats=lambda *a, **k: events.append(("stats", a)),
+            set_hint=lambda t: events.append(("hint", t)),
+        ),
+        transcript_pane=SimpleNamespace(set=lambda t: events.append(("pane", t))),
+        root=SimpleNamespace(after=lambda delay, fn: events.append(("after", delay))),
+    )
+
+    ui.DichApp._on_audio_transcribed(app, result)
+
+    mic_text = " ".join(e[1].get("text", "") for e in events if e[0] == "mic")
+    assert "no speech" in mic_text
+    hint = next(e[1] for e in events if e[0] == "hint")
+    assert "silence is deliberately not transcribed" in hint.lower()
+    assert any(e[0] == "stats" and e[1][0] == "0 sentences" for e in events)
+    # finalize is still scheduled so the session is torn down properly
+    assert ("after", 0) in events
+
+
+def test_non_empty_result_still_reports_the_count():
+    events = []
+    result = SimpleNamespace(sentences=["Xin chào.", "Tạm biệt."], duration=3.0)
+    app = SimpleNamespace(
+        mic_status=SimpleNamespace(configure=lambda **kw: events.append(("mic", kw))),
+        status=SimpleNamespace(
+            set_stats=lambda *a, **k: events.append(("stats", a)),
+            set_hint=lambda t: events.append(("hint", t)),
+        ),
+        transcript_pane=SimpleNamespace(set=lambda t: events.append(("pane", t))),
+        root=SimpleNamespace(after=lambda delay, fn: events.append(("after", delay))),
+    )
+
+    ui.DichApp._on_audio_transcribed(app, result)
+
+    mic_text = next(e[1]["text"] for e in events if e[0] == "mic")
+    assert mic_text == "2 sentences, 3s"
+    assert not any(e[0] == "hint" for e in events)
+
+
+def test_finalized_with_no_utterances_says_no_speech():
+    """The trailing "done · 0 refined" must not claim success when nothing was said."""
+    events = []
+    app = SimpleNamespace(
+        _memory_polling=True,
+        status=SimpleNamespace(
+            set_stats=lambda *a, **k: events.append(("stats", a)),
+            set_memory=lambda t: None,
+        ),
+        speech_translation_pane=SimpleNamespace(set=lambda t: None),
+        translator=SimpleNamespace(
+            render_refined=lambda: "",
+            stats=lambda: {"refined": 0, "utterances": 0, "provisional": 0},
+        ),
+    )
+    app._stop_memory_poll = lambda: ui.DichApp._stop_memory_poll(app)
+
+    ui.DichApp._on_finalized(app, ok=False)
+
+    assert any(e[0] == "stats" and e[1][0] == "no speech detected" for e in events)
+    assert not any(e[1][0].startswith("done") for e in events if e[0] == "stats")
+
+
 def test_file_error_names_the_failure_as_transcription():
     """Not "translation failed": the job that failed was the file transcription."""
     events = []

@@ -1392,9 +1392,22 @@ class DichApp:
         )
 
     def _on_audio_transcribed(self, result):
-        self.mic_status.configure(
-            text=f"{len(result.sentences)} sentences, {result.duration:.0f}s"
-        )
+        count = len(result.sentences)
+        if not count:
+            # Silence is left untranslated on purpose, so "0 sentences" is a
+            # correct outcome rather than a failure — but it must be named,
+            # otherwise a quiet file is indistinguishable from a broken one.
+            self.mic_status.configure(text="no speech detected", foreground=YELLOW)
+            self.transcript_pane.set("")
+            self.status.set_stats("0 sentences", YELLOW)
+            self.status.set_hint(
+                f"No speech found in {result.duration:.0f}s of audio. "
+                "Silence is deliberately not transcribed — check the recording "
+                "has audible voices and try again."
+            )
+            self.root.after(0, lambda: self._stream_sentences([]))
+            return
+        self.mic_status.configure(text=f"{count} sentences, {result.duration:.0f}s")
         self.transcript_pane.set("\n".join(result.sentences))
         self.status.set_stats("translating…")
         # Feed the sentences in on the UI thread so the panes update live.
@@ -1443,7 +1456,11 @@ class DichApp:
         self._stop_memory_poll()
         self.speech_translation_pane.set(self.translator.render_refined())
         stats = self.translator.stats()
-        if ok:
+        if not stats["utterances"]:
+            # Nothing was said (or nothing survived the filters); saying "done ·
+            # 0 refined" in green would read as a successful translation.
+            self.status.set_stats("no speech detected", YELLOW)
+        elif ok:
             self.status.set_stats(
                 f"done · {stats['refined']} refined of {stats['utterances']}", GREEN
             )
