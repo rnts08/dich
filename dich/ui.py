@@ -909,24 +909,32 @@ class DichApp:
             "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
 
-        # --- model settings ------------------------------------------------
-        self._section(form, "Model", row=0)
+        # The input column expands so every control shares one width.
+        form.columnconfigure(1, weight=1)
+
+        row = 0
+
+        # --- model -----------------------------------------------------------
+        self._section(form, "Model", row)
+        row += 1
 
         self.model_var = tk.StringVar(value=backend.MODEL_NAME)
         self.source_var = tk.StringVar(value=backend.SOURCE_LANGUAGE)
         self.target_var = tk.StringVar(value=backend.TARGET_LANGUAGE)
 
+        ttk.Label(form, text="Model").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
         # Model is a picker over what is on disk, not free text: a typo used to
         # start a silent multi-gigabyte download. It stays editable for a new
         # repo, but the size line warns before anything is fetched.
-        ttk.Label(form, text="Model").grid(row=1, column=0, sticky="w", pady=6)
         self.model_combo = ttk.Combobox(
             form,
             textvariable=self.model_var,
             width=54,
             values=self._cached_model_names(),
         )
-        self.model_combo.grid(row=1, column=1, sticky="w", pady=6)
+        self.model_combo.grid(row=row, column=1, sticky="w", pady=theme.SPACE_1)
         self.model_combo.bind("<<ComboboxSelected>>", lambda _e: self._describe_model())
         theme.RoundedButton(
             form,
@@ -934,19 +942,40 @@ class DichApp:
             command=self._refresh_models,
             variant="ghost",
             background=theme.SURFACE0,
-        ).grid(row=1, column=2, padx=theme.SPACE_2)
+        ).grid(row=row, column=2, padx=theme.SPACE_2, pady=theme.SPACE_1)
+        row += 1
 
         self.model_size_label = ttk.Label(form, text="", style="Faint.TLabel")
-        self.model_size_label.grid(row=2, column=1, sticky="w")
+        self.model_size_label.grid(
+            row=row, column=1, sticky="w", pady=(0, theme.SPACE_3)
+        )
+        row += 1
 
-        ttk.Label(form, text="Source").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Label(form, text="Source").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
         ttk.Entry(form, textvariable=self.source_var, width=54).grid(
-            row=3, column=1, sticky="w", pady=6
+            row=row, column=1, sticky="w", pady=theme.SPACE_1
         )
-        ttk.Label(form, text="Target").grid(row=4, column=0, sticky="w", pady=6)
+        row += 1
+
+        ttk.Label(form, text="Target").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
         ttk.Entry(form, textvariable=self.target_var, width=54).grid(
-            row=4, column=1, sticky="w", pady=6
+            row=row, column=1, sticky="w", pady=theme.SPACE_1
         )
+        row += 1
+
+        self.settings_status = ttk.Label(form, text="", style="Faint.TLabel")
+        self.settings_status.grid(
+            row=row,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(theme.SPACE_3, theme.SPACE_1),
+        )
+        row += 1
 
         theme.RoundedButton(
             form,
@@ -954,20 +983,25 @@ class DichApp:
             command=self.save_settings,
             variant="primary",
             background=theme.SURFACE0,
-        ).grid(row=5, column=0, pady=(theme.SPACE_4, 0), padx=(0, theme.SPACE_2))
-        self.settings_status = ttk.Label(form, text="", style="Faint.TLabel")
-        self.settings_status.grid(row=5, column=1, sticky="w", pady=(16, 0))
+        ).grid(
+            row=row,
+            column=0,
+            pady=(theme.SPACE_1, theme.SPACE_3),
+            padx=(0, theme.SPACE_2),
+        )
         theme.RoundedButton(
             form,
             "Unload models",
             command=self.unload_models,
             variant="ghost",
             background=theme.SURFACE0,
-        ).grid(row=5, column=2, padx=theme.SPACE_2, pady=(theme.SPACE_4, 0))
-        self._describe_model()
+        ).grid(row=row, column=1, pady=(theme.SPACE_1, theme.SPACE_3), sticky="w")
+        row += 2
 
-        # --- startup -------------------------------------------------------
-        self._section(form, "Startup", row=7)
+        # --- startup ---------------------------------------------------------
+        self._section(form, "Startup", row)
+        row += 1
+
         self.preload_var = tk.BooleanVar(
             value=bool(backend.CONFIG.get("load_model_on_startup", True))
         )
@@ -977,17 +1011,22 @@ class DichApp:
             variable=self.preload_var,
             command=self._on_preload_toggled,
         )
-        preload_check.grid(row=8, column=0, columnspan=2, sticky="w", pady=4)
+        preload_check.grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1
+        )
+        row += 1
 
         ttk.Label(
             form,
             text="Turned off, the model loads on the first translation instead "
             "and the status stays red until then.",
             style="Faint.TLabel",
-        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_3))
+        row += 2
 
-        # --- microphone -----------------------------------------------------
-        self._section(form, "Microphone", row=11)
+        # --- microphone ------------------------------------------------------
+        self._section(form, "Microphone", row)
+        row += 1
 
         self.device_names: List[str] = []
         self.device_ids: List[Optional[int]] = []
@@ -996,20 +1035,25 @@ class DichApp:
         self.device_var = tk.StringVar()
         self._refresh_devices()
 
-        ttk.Label(form, text="Input device").grid(row=12, column=0, sticky="w", pady=6)
+        ttk.Label(form, text="Input device").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
         self.device_combo = ttk.Combobox(
             form, textvariable=self.device_var, width=54, state="readonly"
         )
-        self.device_combo.grid(row=12, column=1, sticky="w", pady=6)
+        self.device_combo.grid(row=row, column=1, sticky="w", pady=theme.SPACE_1)
         theme.RoundedButton(
             form,
             "Rescan",
             command=self._refresh_devices,
             variant="ghost",
             background=theme.SURFACE0,
-        ).grid(row=12, column=2, padx=theme.SPACE_2)
+        ).grid(row=row, column=2, padx=theme.SPACE_2, pady=theme.SPACE_1)
+        row += 1
 
-        ttk.Label(form, text="Speech model").grid(row=13, column=0, sticky="w", pady=6)
+        ttk.Label(form, text="Speech model").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
         self.mic_model_var = tk.StringVar()
         self.mic_model_labels = [label for _name, label in speech_engine.SPEECH_MODELS]
         self.mic_model_combo = ttk.Combobox(
@@ -1019,20 +1063,22 @@ class DichApp:
             values=self.mic_model_labels,
             state="readonly",
         )
-        self.mic_model_combo.grid(row=13, column=1, sticky="w", pady=6)
+        self.mic_model_combo.grid(row=row, column=1, sticky="w", pady=theme.SPACE_1)
         self._set_mic_model_label(
             backend.CONFIG.get("mic_model", speech_engine.default_live_model())
         )
+        row += 1
 
         self.push_to_talk_var = tk.BooleanVar(
             value=bool(backend.CONFIG.get("push_to_talk", False))
         )
         ttk.Checkbutton(
             form,
-            text="Hold to Talk instead of always-on listening (mouse button on "
-            "the Speech tab)",
+            text="Hold to Talk instead of always-on listening "
+            "(mouse button on the Speech tab)",
             variable=self.push_to_talk_var,
-        ).grid(row=14, column=0, columnspan=3, sticky="w", pady=4)
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 1
 
         self.combine_var = tk.BooleanVar(
             value=bool(backend.CONFIG.get("combine_short_utterances", False))
@@ -1042,7 +1088,8 @@ class DichApp:
             text="Combine consecutive short utterances before translating "
             "(fewer, less fragmented lines)",
             variable=self.combine_var,
-        ).grid(row=15, column=0, columnspan=3, sticky="w", pady=4)
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 1
 
         ttk.Label(
             form,
@@ -1050,33 +1097,15 @@ class DichApp:
             "Vietnamese on an Apple M5; above 1× keeps up with a speaker, "
             "below means the transcript lags.",
             style="Faint.TLabel",
-        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_3))
+        row += 2
 
-        ttk.Label(form, text="Refine every (utterances)").grid(
-            row=17, column=0, sticky="w", pady=6
-        )
-        self.refine_var = tk.IntVar(value=int(backend.CONFIG.get("refine_every", 6)))
-        ttk.Spinbox(
-            form,
-            from_=2,
-            to=40,
-            textvariable=self.refine_var,
-            width=6,
-            command=self._on_refine_every_changed,
-        ).grid(row=17, column=1, sticky="w", pady=6)
-
-        ttk.Label(
-            form,
-            text="How many utterances to collect before the whole block is "
-            "re-translated as one passage. Lower means earlier correction at "
-            "the cost of more model calls.",
-            style="Faint.TLabel",
-        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        # --- listening ------------------------------------------------------
-        self._section(form, "Listening", row=18)
+        # --- listening -------------------------------------------------------
+        self._section(form, "Listening", row)
+        row += 1
 
         ttk.Label(form, text="Transcription window").grid(
-            row=19, column=0, sticky="w", pady=6
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
         )
         self.window_var = tk.DoubleVar(
             value=float(
@@ -1092,17 +1121,43 @@ class DichApp:
             increment=0.5,
             textvariable=self.window_var,
             width=6,
-        ).grid(row=19, column=1, sticky="w", pady=6)
+        ).grid(row=row, column=1, sticky="w", pady=theme.SPACE_1)
+        row += 1
+
         ttk.Label(
             form,
             text="Seconds of audio per transcription. Short means the first words "
             "appear sooner; each call carries fixed overhead, so short windows "
             "also lower the realtime factor.",
             style="Faint.TLabel",
-        ).grid(row=20, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_2))
+        row += 1
+
+        ttk.Label(form, text="Refine every (utterances)").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
+        self.refine_var = tk.IntVar(value=int(backend.CONFIG.get("refine_every", 6)))
+        ttk.Spinbox(
+            form,
+            from_=2,
+            to=40,
+            textvariable=self.refine_var,
+            width=6,
+            command=self._on_refine_every_changed,
+        ).grid(row=row, column=1, sticky="w", pady=theme.SPACE_1)
+        row += 1
+
+        ttk.Label(
+            form,
+            text="How many utterances to collect before the whole block is "
+            "re-translated as one passage. Lower means earlier correction at "
+            "the cost of more model calls.",
+            style="Faint.TLabel",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_2))
+        row += 1
 
         ttk.Label(form, text="Buffer ceiling").grid(
-            row=21, column=0, sticky="w", pady=6
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
         )
         self.buffer_var = tk.IntVar(
             value=int(
@@ -1118,49 +1173,62 @@ class DichApp:
             increment=30,
             textvariable=self.buffer_var,
             width=6,
-        ).grid(row=21, column=1, sticky="w", pady=6)
+        ).grid(row=row, column=1, sticky="w", pady=theme.SPACE_1)
+        row += 1
+
         ttk.Label(
             form,
             text="Seconds of audio to hold before the oldest is dropped. 600s is "
             "about 38 MB. Raise it to let a slower model catch up, or to keep "
             "a long recording for re-transcribing.",
             style="Faint.TLabel",
-        ).grid(row=22, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_3))
+        row += 2
+
+        # --- OCR -------------------------------------------------------------
+        self._section(form, "OCR", row)
+        row += 1
 
         self.ocr_var = tk.BooleanVar(
             value=bool(backend.CONFIG.get("ocr_enabled", True))
         )
         ttk.Checkbutton(
             form,
-            text="OCR image-based PDFs when they have no text layer (needs "
-            "tesseract + poppler; Vietnamese needs its vie lang data)",
+            text="OCR image-based PDFs when they have no text layer "
+            "(needs tesseract + poppler; Vietnamese needs its vie lang data)",
             variable=self.ocr_var,
-        ).grid(row=23, column=0, columnspan=3, sticky="w", pady=4)
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 2
 
-        # --- cache ----------------------------------------------------------
-        self._section(form, "Translation cache", row=24)
+        # --- translation cache -----------------------------------------------
+        self._section(form, "Translation cache", row)
+        row += 1
 
         self.cache_status = ttk.Label(
             form, text=self._cache_summary(), style="Faint.TLabel"
         )
-        self.cache_status.grid(row=25, column=0, columnspan=2, sticky="w", pady=4)
-
+        self.cache_status.grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=theme.SPACE_1
+        )
         theme.RoundedButton(
             form,
             "Clear cache",
             command=self.clear_cache,
             variant="danger",
             background=theme.SURFACE0,
-        ).grid(row=25, column=2, padx=theme.SPACE_2)
+        ).grid(row=row, column=2, padx=theme.SPACE_2, pady=theme.SPACE_1)
+        row += 2
 
-        # --- debug: google reference ---------------------------------------
-        self._section(form, "Debug", row=27)
+        # --- debug: google reference -----------------------------------------
+        self._section(form, "Debug", row)
+        row += 1
 
         ttk.Label(
             form,
             text="Google Translate reference for verifying output.",
             style="Faint.TLabel",
-        ).grid(row=28, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_2))
+        row += 1
 
         theme.RoundedButton(
             form,
@@ -1168,7 +1236,8 @@ class DichApp:
             command=self.run_reference,
             variant="ghost",
             background=theme.SURFACE0,
-        ).grid(row=29, column=0, pady=theme.SPACE_1)
+        ).grid(row=row, column=0, pady=theme.SPACE_1, sticky="w")
+        row += 1
 
         self.reference_pane = TextPane(
             form,
@@ -1177,36 +1246,62 @@ class DichApp:
             placeholder="Reference appears here",
         )
         self.reference_pane.grid(
-            row=30, column=0, columnspan=2, sticky="nsew", pady=(10, 0)
+            row=row,
+            column=0,
+            columnspan=3,
+            sticky="nsew",
+            pady=(theme.SPACE_2, theme.SPACE_1),
         )
+        row += 1
+
         self.quality_label = ttk.Label(form, text="", style="Faint.TLabel")
-        self.quality_label.grid(row=31, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.quality_label.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(theme.SPACE_1, theme.SPACE_3),
+        )
         theme.RoundedButton(
             form,
             "Score vs reference",
             command=self.score_translation,
             variant="ghost",
             background=theme.SURFACE0,
-        ).grid(row=31, column=2, padx=theme.SPACE_2, pady=(4, 0))
-        form.rowconfigure(30, weight=1)
-        form.columnconfigure(1, weight=1)
+        ).grid(
+            row=row, column=2, padx=theme.SPACE_2, pady=(theme.SPACE_1, theme.SPACE_3)
+        )
+        row += 2
 
-        # --- about ---------------------------------------------------------
-        self._section(form, "About", row=32)
+        form.rowconfigure(row - 2, weight=1)  # reference pane row expands
+
+        # --- about -----------------------------------------------------------
+        self._section(form, "About", row)
+        row += 1
 
         ttk.Label(form, text=f"{APP_NAME} v{VERSION}", style="H2.TLabel").grid(
-            row=26, column=0, sticky="w", pady=2
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
         )
+        row += 1
+
         ttk.Label(
-            form, text="A local Vietnamese → English translator.", style="Faint.TLabel"
-        ).grid(row=34, column=0, columnspan=2, sticky="w", pady=(0, 6))
+            form,
+            text="A local Vietnamese → English translator.",
+            style="Faint.TLabel",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_3))
+        row += 1
 
         theme.SectionLabel(form, "© 2026 Tim Bergström").grid(
-            row=35, column=0, sticky="w", pady=2
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
         )
+        row += 1
+
         ttk.Label(
-            form, text="Non-commercial use only. See LICENSE.", style="Faint.TLabel"
-        ).grid(row=36, column=0, sticky="w", pady=(0, 6))
+            form,
+            text="Non-commercial use only. See LICENSE.",
+            style="Faint.TLabel",
+        ).grid(row=row, column=0, sticky="w", pady=(0, theme.SPACE_3))
+        row += 1
 
         theme.RoundedButton(
             form,
@@ -1214,15 +1309,19 @@ class DichApp:
             command=self.open_home,
             variant="ghost",
             background=theme.SURFACE0,
-        ).grid(row=37, column=0, sticky="w", pady=(0, 8))
-
+        ).grid(row=row, column=0, sticky="w", pady=(theme.SPACE_1, theme.SPACE_2))
         theme.RoundedButton(
             form,
             "Show licence",
             command=self.show_licence,
-            variant="quiet",
+            variant="ghost",
             background=theme.SURFACE0,
-        ).grid(row=37, column=2, sticky="w")
+        ).grid(row=row, column=1, sticky="w", pady=(theme.SPACE_1, theme.SPACE_2))
+        row += 2
+
+        form.rowconfigure(row, weight=1)
+
+        self._describe_model()
 
     # -- helpers ----------------------------------------------------------
     def _section(self, form, title, row):
