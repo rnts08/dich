@@ -10,5 +10,9 @@
   "mic_model": "small",
   "stt_backend": "auto",
   "refine_every": 6,
-  "notes": "translategemma serves its own chat template in-process; Qwen3 is the fallback. mlx-lm cannot load T5 (VTSNLP/trans_model_vi_en) and plamo-2-translate is en<->ja only. mic_device_index null = system default; stt_backend 'auto' runs Whisper on the GPU via mlx-audio when available (large-v3-turbo: 3.1x realtime on CPU, 31x on GPU) and falls back to the CPU otherwise."
+  "window_geometry": "",
+  "recent_files": [],
+  "idle_unload_minutes": 15,
+  "glossary": {},
+  "notes": "translategemma serves its own chat template in-process; Qwen3 is the fallback. mic_device_index null = system default; stt_backend 'auto' runs speech-to-text on the GPU via mlx-audio when available (large-v3-turbo: 31x realtime on the GPU) and falls back to the CPU otherwise."
 }

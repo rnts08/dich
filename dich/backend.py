@@ -111,6 +111,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # GPU, so "auto" removes the CPU's accuracy/latency tradeoff.
     "stt_backend": "auto",
     "refine_every": 6,  # utterances between block re-translations
+    # --- app lifecycle (Milestone 0.5) ---
+    "window_geometry": "",  # "WxH+X+Y", remembered between runs
+    "recent_files": [],  # most-recent first, capped on write
+    "idle_unload_minutes": 15,  # free model RAM after this long idle; 0 = never
+    "glossary": {},  # source term -> preferred translation, kept verbatim
 }
 
 
@@ -210,10 +215,7 @@ def reload_config() -> Dict[str, Any]:
 
     # Drop resident engines so a model switch takes effect immediately rather
     # than silently reusing the previously loaded one.
-    engines = list(_ENGINES.values())
-    _ENGINES.clear()
-    for engine in engines:
-        engine.unload()
+    unload_models()
     logger.info(f"Config reloaded; active model is now {MODEL_NAME}")
     return CONFIG
 
@@ -338,6 +340,107 @@ def cache_stats() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Model management: what is on disk, how big it is, and freeing it
+# ---------------------------------------------------------------------------
+# The picker used to be free text, so a typo like "…-4bit-" silently started a
+# multi-gigabyte download. Everything here exists so the UI can show what is
+# already cached, its size, and roughly how much RAM it will want before the
+# user commits to it.
+
+
+def human_bytes(num: float) -> str:
+    """Format a byte count the way a person reads it."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(num) < 1024.0:
+            return f"{num:.0f} {unit}" if unit == "B" else f"{num:.1f} {unit}"
+        num /= 1024.0
+    return f"{num:.1f} PB"
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for child in path.rglob("*"):
+        try:
+            if child.is_file():
+                total += child.stat().st_size
+        except OSError:  # pragma: no cover - a racing delete is not fatal
+            continue
+    return total
+
+
+def repo_cache_dir(repo: str) -> Path:
+    """Where huggingface_hub stores `repo` under MODELS_DIR."""
+    return MODELS_DIR / f"models--{repo.replace('/', '--')}"
+
+
+def is_model_cached(repo: str) -> bool:
+    """True when the repo has at least one snapshot on disk."""
+    snapshots = repo_cache_dir(repo) / "snapshots"
+    return snapshots.is_dir() and any(snapshots.glob("*"))
+
+
+def cached_models() -> List[Dict[str, Any]]:
+    """
+    Every model repo already on disk, with its size.
+
+    Ordered by size descending, so the heavy models — the ones worth thinking
+    about before switching to — come first.
+    """
+    models: List[Dict[str, Any]] = []
+    if not MODELS_DIR.exists():
+        return models
+    for entry in MODELS_DIR.glob("models--*"):
+        if not entry.is_dir():
+            continue
+        repo = entry.name[len("models--") :].replace("--", "/")
+        size = _dir_size(entry)
+        models.append({"model": repo, "bytes": size, "size": human_bytes(size)})
+    models.sort(key=lambda m: m["bytes"], reverse=True)
+    return models
+
+
+def model_size_bytes(repo: str) -> Optional[int]:
+    """On-disk size of a cached model, or None when it is not cached."""
+    if not is_model_cached(repo):
+        return None
+    return _dir_size(repo_cache_dir(repo))
+
+
+def estimated_download_bytes(repo: str) -> Optional[int]:
+    """
+    Download size of a repo that is *not* cached, from the Hub API.
+
+    Returns None when the lookup fails (offline, renamed repo). The UI must not
+    block on this; it is a courtesy warning, not a gate.
+    """
+    try:
+        response = httpx.get(
+            f"https://huggingface.co/api/models/{repo}",
+            params={"blobs": "true"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        siblings = response.json().get("siblings", [])
+    except (httpx.HTTPError, ValueError):
+        return None
+    total = sum(s.get("size") or 0 for s in siblings if isinstance(s, dict))
+    return total or None
+
+
+# 4-bit MLX weights inflate a little once the tokenizer and a KV cache are
+# resident. This is an estimate for the picker, not a promise.
+RAM_OVERHEAD = 1.25
+
+
+def estimated_ram_bytes(repo: str) -> Optional[int]:
+    """Rough resident RAM for a model, from disk when cached, else the Hub."""
+    size = model_size_bytes(repo)
+    if size is None:
+        size = estimated_download_bytes(repo)
+    return int(size * RAM_OVERHEAD) if size else None
+
+
+# ---------------------------------------------------------------------------
 # Text extraction
 # ---------------------------------------------------------------------------
 
@@ -440,6 +543,73 @@ def extract_text_from_file(file_path: str) -> str:
             f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(e for e in _EXTRACTORS if e))}"
         )
     return extractor(file_path)
+
+
+def export_text(text: str, path: str) -> str:
+    """
+    Write a translation to `path`, keeping the source format where possible.
+
+    A `.docx` in should be a `.docx` out: headings and paragraphs are rebuilt as
+    real Word paragraphs rather than a flat text dump. Formats that cannot be
+    re-emitted faithfully (PDF) fall back to plain UTF-8 text, which is why the
+    suffix is honoured rather than assumed.
+    """
+    target = Path(path)
+    suffix = target.suffix.lower()
+
+    if suffix in (".docx", ".docm"):
+        import docx
+
+        document = docx.Document()
+        for block in text.split("\n\n"):
+            # Word has no "#", so a heading line becomes a real heading; the
+            # rest becomes body text. This is best-effort structure, not a
+            # lossless round trip.
+            lines = block.split("\n")
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if i == 0 and stripped.startswith("#"):
+                    level = min(len(stripped) - len(stripped.lstrip("#")), 4)
+                    document.add_heading(stripped.lstrip("# ").strip(), level=level)
+                else:
+                    document.add_paragraph(stripped)
+        document.save(str(target))
+        return str(target)
+
+    target.write_text(text, encoding="utf-8")
+    return str(target)
+
+
+# ---------------------------------------------------------------------------
+# Glossary
+# ---------------------------------------------------------------------------
+
+
+def glossary_directive() -> str:
+    """
+    Instruction pinning configured terms to a preferred translation.
+
+    Empty when nothing is configured, so the prompt is byte-identical to the
+    un-glossaried one in the common case — the glossary must never change
+    ordinary output.
+    """
+    glossary = CONFIG.get("glossary") or {}
+    if not isinstance(glossary, dict):
+        return ""
+    pairs = [
+        (str(src).strip(), str(dst).strip())
+        for src, dst in glossary.items()
+        if str(src).strip() and str(dst).strip()
+    ]
+    if not pairs:
+        return ""
+    lines = "\n".join(f"- {src} -> {dst}" for src, dst in pairs)
+    return (
+        "\n\nUse these exact translations for these terms wherever they "
+        "appear:\n" + lines
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -657,13 +827,14 @@ class LocalEngine:
 
     def build_messages(self, chunk: str) -> list:
         """Shape the request for this model's expected format."""
+        glossary = glossary_directive()
         if get_profile(self.model_name)["prompt_style"] == "translategemma":
             # The template injects the translator instruction itself, so only
             # the language tags are supplied. The Markdown request rides along
             # with the source text, since there is no system turn to hold it.
             text = chunk
             if MARKDOWN_INSTRUCTION.strip() not in chunk:
-                text = chunk + MARKDOWN_INSTRUCTION
+                text = chunk + MARKDOWN_INSTRUCTION + glossary
             return [
                 {
                     "role": "user",
@@ -686,7 +857,8 @@ class LocalEngine:
                     if SOURCE_LANGUAGE == "Vietnamese"
                     else SOURCE_LANGUAGE,
                     target=TARGET_LANGUAGE,
-                ),
+                )
+                + glossary,
             },
             {"role": "user", "content": chunk},
         ]
@@ -765,6 +937,26 @@ def get_engine(model_name: str) -> "LocalEngine":
             engine = LocalEngine(model_name)
             _ENGINES[model_name] = engine
         return engine
+
+
+def unload_models(keep: Optional[str] = None) -> List[str]:
+    """
+    Drop resident engines, freeing their RAM. Returns the names unloaded.
+
+    `keep` names a model to leave loaded, which is how the idle sweep frees
+    everything except the one the user is actively using.
+    """
+    with _ENGINE_LOCK:
+        names = [name for name in _ENGINES if name != keep]
+        engines = [_ENGINES.pop(name) for name in names]
+    for engine in engines:
+        try:
+            engine.unload()
+        except Exception as e:  # noqa: BLE001 - freeing memory must not raise
+            logger.warning(f"Unload of {engine.model_name} failed: {e}")
+    if names:
+        logger.info(f"Unloaded models: {', '.join(names)}")
+    return names
 
 
 def _translate_chunks(
@@ -939,6 +1131,64 @@ def translate_files(
             logger.error(f"Failed to translate {path}: {e}")
             results.append({"file": path, "ok": False, "error": str(e)})
     return {"results": results}
+
+
+def folder_files(folder: str) -> List[str]:
+    """Supported files directly inside `folder`, sorted, non-recursive."""
+    root = Path(folder)
+    if not root.is_dir():
+        return []
+    return sorted(
+        str(p)
+        for p in root.iterdir()
+        if p.is_file() and p.suffix.lower() in _EXTRACTORS
+    )
+
+
+def export_suffix_for(file_path: str) -> str:
+    """
+    Extension to give an exported translation of `file_path`.
+
+    A format that can be rebuilt is kept (`.docx` -> `.docx`); a PDF's flat text
+    has no faithful container, so it becomes `.txt`.
+    """
+    suffix = Path(file_path).suffix.lower()
+    return (
+        suffix if suffix in (".docx", ".docm", ".md", ".markdown", ".txt") else ".txt"
+    )
+
+
+def translate_folder(
+    folder: str,
+    model: Optional[str] = None,
+    on_progress: Optional[Callable[[Progress], None]] = None,
+    on_file: Optional[Callable[[str, dict], None]] = None,
+) -> Dict[str, Any]:
+    """
+    Translate every supported file in a folder and write each result beside it.
+
+    Output names carry the target language, e.g. `notes.docx` ->
+    `notes.en.docx`, so a batch never overwrites its source. One file failing
+    does not stop the rest.
+    """
+    files = folder_files(folder)
+    results: List[dict] = []
+    for path in files:
+        try:
+            result = translate_file(path, model=model, on_progress=on_progress)
+            out_path = str(Path(path).with_suffix("")) + (
+                f".{_lang_code(TARGET_LANGUAGE)}{export_suffix_for(path)}"
+            )
+            export_text(result.text, out_path)
+            results.append(
+                {"file": path, "ok": True, "out": out_path, "result": result}
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to translate {path}: {e}")
+            results.append({"file": path, "ok": False, "error": str(e)})
+        if on_file is not None:
+            on_file(path, results[-1])
+    return {"folder": folder, "results": results}
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import json
 import queue
 import re
 import threading
+import time
 import tkinter as tk
 import traceback
 import webbrowser
@@ -504,7 +505,7 @@ class DichApp:
         self.root = root
         theme.apply(root)
         self.root.title(f"{APP_NAME} {VERSION} · {APP_TAGLINE}")
-        self.root.geometry("1280x820")
+        self.root.geometry(self._saved_geometry())
         self.root.configure(bg=BG)
 
         self.worker = Worker(root)
@@ -516,6 +517,10 @@ class DichApp:
         self._memory_polling = False
         self._file_transcribing = False
         self._last_partial = ""
+        # Idle bookkeeping: models are freed once nothing has been asked of
+        # them for a while, so a finished session does not hold gigabytes.
+        self._last_activity = time.time()
+        self._idle_unloaded = False
 
         self._build_style()
         self._build_menu()
@@ -528,6 +533,46 @@ class DichApp:
         if backend.CONFIG.get("load_model_on_startup", True):
             backend.preload_model()
         self.root.after(200, self._check_server)
+        self.root.after(60_000, self._idle_tick)
+
+    def _saved_geometry(self) -> str:
+        """Remembered window geometry, or a sane default on first run."""
+        geometry = str(backend.CONFIG.get("window_geometry") or "").strip()
+        return geometry or "1280x820"
+
+    # -- idle model unloading ---------------------------------------------
+    def note_activity(self):
+        """Reset the idle clock; call whenever work is requested."""
+        self._last_activity = time.time()
+        self._idle_unloaded = False
+
+    def _idle_tick(self):
+        """
+        Free model RAM after a stretch with nothing to do.
+
+        Both the translation and the speech engines hold gigabytes, and a
+        finished session should not keep them. The clock resets on every
+        request, so a model in active use is never dropped.
+        """
+        try:
+            minutes = float(backend.CONFIG.get("idle_unload_minutes", 15) or 0)
+        except (TypeError, ValueError):
+            minutes = 15
+        idle_for = time.time() - self._last_activity
+        if (
+            minutes > 0
+            and not self._idle_unloaded
+            and not self.recording
+            and not self._file_transcribing
+            and idle_for > minutes * 60
+        ):
+            names = backend.unload_models()
+            self._idle_unloaded = True
+            if names:
+                self.status.set_hint(
+                    f"unloaded {len(names)} idle model(s) — they reload on next use"
+                )
+        self.root.after(60_000, self._idle_tick)
 
     # -- menu -------------------------------------------------------------
     def _build_menu(self):
@@ -547,9 +592,13 @@ class DichApp:
         file_menu.add_command(
             label="Open Document…", accelerator="Cmd+O", command=self.open_file
         )
+        file_menu.add_command(label="Open Folder (batch)…", command=self.open_folder)
         file_menu.add_command(
             label="Open Audio…", accelerator="Cmd+Shift+O", command=self.open_audio
         )
+        file_menu.add_separator()
+        self.recent_menu = tk.Menu(file_menu, tearoff=False)
+        file_menu.add_cascade(label="Open Recent", menu=self.recent_menu)
         file_menu.add_separator()
         file_menu.add_command(
             label="Save Translation…",
@@ -558,12 +607,17 @@ class DichApp:
         )
         file_menu.add_separator()
         file_menu.add_command(
-            label="Close Window", accelerator="Cmd+W", command=self.root.destroy
+            label="Close Window", accelerator="Cmd+W", command=self._on_close
         )
 
         edit_menu = tk.Menu(bar, tearoff=False)
         bar.add_cascade(label="Edit", menu=edit_menu)
         edit_menu.add_command(label="Translate", command=self.translate_current)
+        edit_menu.add_command(
+            label="Translate Clipboard",
+            accelerator="Cmd+Shift+V",
+            command=self.translate_clipboard,
+        )
         edit_menu.add_command(label="Refine Speech", command=self.refine_speech)
         edit_menu.add_separator()
         edit_menu.add_command(label="Clear Translation", command=self.clear_translate)
@@ -582,11 +636,13 @@ class DichApp:
         help_menu.add_command(label="About Dịch", command=self.show_about)
 
         self._bind_shortcuts()
+        self._rebuild_recent_menu()
 
     def _bind_shortcuts(self):
         self.root.bind_all("<Command-o>", lambda e: self.open_file())
         self.root.bind_all("<Command-O>", lambda e: self.open_audio())
         self.root.bind_all("<Command-s>", lambda e: self.save_translation())
+        self.root.bind_all("<Command-Shift-V>", lambda e: self.translate_clipboard())
 
     def show_about(self):
         backend_info = (
@@ -798,16 +854,37 @@ class DichApp:
         self.source_var = tk.StringVar(value=backend.SOURCE_LANGUAGE)
         self.target_var = tk.StringVar(value=backend.TARGET_LANGUAGE)
 
-        fields = [
-            ("Model", self.model_var),
-            ("Source", self.source_var),
-            ("Target", self.target_var),
-        ]
-        for i, (label, var) in enumerate(fields, start=1):
-            ttk.Label(form, text=label).grid(row=i, column=0, sticky="w", pady=6)
-            ttk.Entry(form, textvariable=var, width=54).grid(
-                row=i, column=1, sticky="w", pady=6
-            )
+        # Model is a picker over what is on disk, not free text: a typo used to
+        # start a silent multi-gigabyte download. It stays editable for a new
+        # repo, but the size line warns before anything is fetched.
+        ttk.Label(form, text="Model").grid(row=1, column=0, sticky="w", pady=6)
+        self.model_combo = ttk.Combobox(
+            form,
+            textvariable=self.model_var,
+            width=54,
+            values=self._cached_model_names(),
+        )
+        self.model_combo.grid(row=1, column=1, sticky="w", pady=6)
+        self.model_combo.bind("<<ComboboxSelected>>", lambda _e: self._describe_model())
+        theme.RoundedButton(
+            form,
+            "Refresh",
+            command=self._refresh_models,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=1, column=2, padx=theme.SPACE_2)
+
+        self.model_size_label = ttk.Label(form, text="", style="Faint.TLabel")
+        self.model_size_label.grid(row=2, column=1, sticky="w")
+
+        ttk.Label(form, text="Source").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.source_var, width=54).grid(
+            row=3, column=1, sticky="w", pady=6
+        )
+        ttk.Label(form, text="Target").grid(row=4, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.target_var, width=54).grid(
+            row=4, column=1, sticky="w", pady=6
+        )
 
         theme.RoundedButton(
             form,
@@ -818,6 +895,14 @@ class DichApp:
         ).grid(row=5, column=0, pady=(theme.SPACE_4, 0), padx=(0, theme.SPACE_2))
         self.settings_status = ttk.Label(form, text="", style="Faint.TLabel")
         self.settings_status.grid(row=5, column=1, sticky="w", pady=(16, 0))
+        theme.RoundedButton(
+            form,
+            "Unload models",
+            command=self.unload_models,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=5, column=2, padx=theme.SPACE_2, pady=(theme.SPACE_4, 0))
+        self._describe_model()
 
         # --- startup -------------------------------------------------------
         self._section(form, "Startup", row=7)
@@ -1049,6 +1134,79 @@ class DichApp:
         stats = cache_stats()
         return f"{stats['entries']} saved translation(s) in {stats['dir']}"
 
+    # -- model picker -----------------------------------------------------
+    def _cached_model_names(self) -> List[str]:
+        """Repos already on disk, plus whatever is configured (never lost)."""
+        names = [m["model"] for m in backend.cached_models()]
+        current = backend.MODEL_NAME
+        if current and current not in names:
+            names.insert(0, current)
+        return names
+
+    def _refresh_models(self):
+        """Re-scan the cache, e.g. after a first download completes."""
+        self.model_combo.configure(values=self._cached_model_names())
+        self._describe_model()
+
+    def _describe_model(self):
+        """
+        Say how big the chosen model is, without blocking the UI.
+
+        Cached: size straight off disk. Not cached: a Hub lookup on a worker
+        thread, so a slow or offline network cannot freeze the settings tab.
+        """
+        repo = self.model_var.get().strip()
+        if not repo:
+            self.model_size_label.configure(text="")
+            return
+        size = backend.model_size_bytes(repo)
+        if size is not None:
+            ram = backend.estimated_ram_bytes(repo)
+            self.model_size_label.configure(
+                text=f"cached on disk: {backend.human_bytes(size)}"
+                f" · about {backend.human_bytes(ram)} RAM",
+                foreground=FG,
+            )
+            return
+        self.model_size_label.configure(
+            text="not cached — checking download size…", foreground=YELLOW
+        )
+        self.worker.run(
+            backend.estimated_download_bytes,
+            repo,
+            on_success=lambda n: self._show_download_size(repo, n),
+            on_error=lambda _e, _tb: self._model_not_cached(repo),
+        )
+
+    def _show_download_size(self, repo: str, num_bytes):
+        if self.model_var.get().strip() != repo:
+            return  # the user moved on while the lookup ran
+        if num_bytes:
+            self.model_size_label.configure(
+                text=f"not cached — downloads about "
+                f"{backend.human_bytes(num_bytes)} on first use",
+                foreground=YELLOW,
+            )
+        else:
+            self._model_not_cached(repo)
+
+    def _model_not_cached(self, repo: str):
+        if self.model_var.get().strip() != repo:
+            return
+        self.model_size_label.configure(
+            text="not cached — will download on first use", foreground=YELLOW
+        )
+
+    def unload_models(self):
+        """Free the RAM the translation models hold, without quitting."""
+        names = backend.unload_models()
+        if names:
+            self.settings_status.configure(
+                text=f"unloaded {len(names)} model(s)", foreground=GREEN
+            )
+        else:
+            self.settings_status.configure(text="nothing was loaded", foreground=FG)
+
     def _refresh_devices(self):
         """Rebuild the microphone dropdown from what is actually present."""
         # Keep an unsaved choice: rescanning should update the option list, not
@@ -1238,21 +1396,150 @@ class DichApp:
         )
         if not path:
             return
-        self.current_file = Path(path)
-        self.file_label.configure(text=self.current_file.name)
+        self._load_document(Path(path))
+
+    def _load_document(self, path: Path):
+        """Load one document into the source pane and kick off extraction."""
+        self.note_activity()
+        self.current_file = path
+        self.file_label.configure(text=path.name)
         self.cache_label.configure(text="")
         self.source_pane.set("loading…")
         self.worker.run(
             backend.extract_text_from_file,
-            path,
+            str(path),
             on_success=self._on_file_loaded,
             on_error=lambda exc, tb: self._show_error(
                 "Could not read that file", exc, tb
             ),
         )
 
+    def open_folder(self):
+        """Translate every supported file in a folder, writing each result out."""
+        folder = filedialog.askdirectory(
+            title="Choose a folder of documents to translate"
+        )
+        if not folder:
+            return
+        files = backend.folder_files(folder)
+        if not files:
+            messagebox.showinfo(
+                "Nothing to translate", "No supported documents in that folder."
+            )
+            return
+        self.note_activity()
+        self.notebook.select(0)
+        self.root.config(cursor="watch")
+        self.status.set_busy(f"translating {len(files)} file(s)…", hint=folder)
+        self.worker.run(
+            backend.translate_folder,
+            folder,
+            on_file=lambda p, r: self.worker.post(self._on_folder_file, p, r),
+            on_success=lambda out: self._on_folder_done(folder, out),
+            on_error=self._on_translation_error,
+        )
+
+    def _on_folder_file(self, path: str, result: dict):
+        name = Path(path).name
+        if result.get("ok"):
+            self.status.set_stats(f"translated {name}", GREEN)
+        else:
+            self.status.set_stats(f"failed {name}", RED)
+
+    def _on_folder_done(self, folder: str, out: dict):
+        self.root.config(cursor="")
+        results = out.get("results", [])
+        ok = sum(1 for r in results if r.get("ok"))
+        failed = len(results) - ok
+        self.status.set_stats(
+            f"{ok} translated · {failed} failed", GREEN if not failed else YELLOW
+        )
+        self.status.set_hint(f"written beside the sources in {folder}")
+        self._refresh_models()
+
+    def translate_clipboard(self):
+        """Translate whatever text is on the clipboard, without a file."""
+        try:
+            text = self.root.clipboard_get()
+        except tk.TclError:
+            self.status.set_hint("clipboard is empty")
+            return
+        if not text.strip():
+            self.status.set_hint("clipboard is empty")
+            return
+        self.notebook.select(0)
+        self.current_file = None
+        self.file_label.configure(text="clipboard")
+        self.cache_label.configure(text="")
+        self.source_pane.set(text)
+        self.translate_current()
+
+    # -- recent files -----------------------------------------------------
+    def _rebuild_recent_menu(self):
+        menu = getattr(self, "recent_menu", None)
+        if menu is None:
+            return
+        menu.delete(0, "end")
+        recent = [p for p in backend.CONFIG.get("recent_files", []) if p]
+        if not recent:
+            menu.add_command(label="(nothing yet)", state="disabled")
+            return
+        for path in recent:
+            menu.add_command(
+                label=Path(path).name,
+                command=lambda p=path: self._open_recent(p),
+            )
+        menu.add_separator()
+        menu.add_command(label="Clear List", command=self._clear_recent)
+
+    def _open_recent(self, path: str):
+        candidate = Path(path)
+        if not candidate.exists():
+            messagebox.showwarning(
+                "File is gone", f"{candidate}\n\nIt moved or was deleted."
+            )
+            self._forget_recent(path)
+            return
+        self._load_document(candidate)
+
+    def _remember_recent(self, path: Path):
+        entry = str(path)
+        recent = [p for p in backend.CONFIG.get("recent_files", []) if p and p != entry]
+        recent.insert(0, entry)
+        self._save_config_fields({"recent_files": recent[:8]})
+        self._rebuild_recent_menu()
+
+    def _forget_recent(self, path: str):
+        recent = [p for p in backend.CONFIG.get("recent_files", []) if p != path]
+        self._save_config_fields({"recent_files": recent})
+        self._rebuild_recent_menu()
+
+    def _clear_recent(self):
+        self._save_config_fields({"recent_files": []})
+        self._rebuild_recent_menu()
+
+    def _save_config_fields(self, updates: dict):
+        """Merge fields into config.json and the in-memory CONFIG together."""
+        data = {}
+        if CONFIG_PATH.exists():
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        data.update(updates)
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except OSError as exc:
+            self._show_error("Could not save settings", exc, "")
+            return
+        backend.CONFIG.update(updates)
+
     def _on_file_loaded(self, text: str):
         self.source_pane.set(text)
+        if self.current_file is not None:
+            self._remember_recent(self.current_file)
         # Show whether this exact text is already translated.
         hit = backend.cache_get(text.strip())
         if hit:
@@ -1266,6 +1553,7 @@ class DichApp:
             )
             return
 
+        self.note_activity()
         self.root.config(cursor="watch")
         self.status.set_busy("translating…")
         self.target_pane.set("")
@@ -1292,6 +1580,7 @@ class DichApp:
         self.root.config(cursor="")
         self.target_pane.set(result.text)
         self.status.set_progress(100)
+        self.note_activity()
 
         # A first translation loads the model, so the status may still be
         # showing "not loaded" and would stay red until the next (15s) poll.
@@ -1331,23 +1620,39 @@ class DichApp:
             messagebox.showwarning("Nothing to save", "Translate something first.")
             return
 
-        initial = "dich-translation.txt"
-        if self.current_file:
-            initial = f"{self.current_file.stem}.{backend.TARGET_LANGUAGE.lower()}.txt"
+        # Default to the format the source was read from, so a `.docx` in is a
+        # `.docx` out. A PDF has no faithful container, so its text is `.txt`.
+        suffix = (
+            backend.export_suffix_for(str(self.current_file))
+            if self.current_file
+            else ".txt"
+        )
+        stem = (
+            f"{self.current_file.stem}.{backend.TARGET_LANGUAGE.lower()}"
+            if self.current_file
+            else "dich-translation"
+        )
         path = filedialog.asksaveasfilename(
             title="Save translation",
-            initialfile=initial,
-            defaultextension=".txt",
+            initialfile=f"{stem}{suffix}",
+            defaultextension=suffix,
             filetypes=[
+                ("Same format as the source", f"*{suffix}"),
                 ("Text files", "*.txt"),
                 ("Markdown", "*.md"),
+                ("Word document", "*.docx"),
                 ("All files", "*.*"),
             ],
         )
         if not path:
             return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(translation)
+        try:
+            backend.export_text(translation, path)
+        except Exception as exc:  # noqa: BLE001 - a save must not crash the app
+            self._show_error(
+                "Could not save the translation", exc, traceback.format_exc()
+            )
+            return
         self.status.set_hint(f"saved to {path}")
 
     # -- speech tab -------------------------------------------------------
@@ -1554,6 +1859,7 @@ class DichApp:
         # microphone access, which can be indefinitely long if nothing can show
         # the permission prompt. It therefore runs off the UI thread: a stuck
         # open would otherwise freeze the whole window.
+        self.note_activity()
         self._mic_opening = True
         self.mic_button.configure(state="disabled")
         self.mic_status.configure(text="opening…")
@@ -1731,6 +2037,19 @@ class DichApp:
         return None
 
     def save_settings(self):
+        chosen = self.model_var.get().strip()
+        if chosen and not backend.is_model_cached(chosen):
+            # A new repo means a first use that fetches gigabytes. Ask first;
+            # the size line above already showed the estimate, so this does not
+            # need to hit the network again here on the UI thread.
+            if not messagebox.askyesno(
+                "Download a new model?",
+                f"{chosen} is not cached yet.\n\nSaving keeps the choice; the "
+                "weights download on the next translation, which can take a "
+                "while and several gigabytes. Continue?",
+            ):
+                return
+
         data = {}
         if CONFIG_PATH.exists():
             try:
@@ -1763,6 +2082,7 @@ class DichApp:
         # A different model may already be resident; drop it so the next run
         # reloads with the new choice instead of silently reusing the old one.
         backend.reload_config()
+        self._refresh_models()
         self.settings_status.configure(text="Saved — model reloaded", foreground=GREEN)
 
     def clear_cache(self):
@@ -1806,6 +2126,16 @@ class DichApp:
             from . import speech_engine
 
             speech_engine.stop_mic_stream()
+        except Exception:  # noqa: BLE001
+            pass
+        # Remember where the window was, and hand the model RAM back rather
+        # than leaving gigabytes pinned by a process that is exiting.
+        try:
+            self._save_config_fields({"window_geometry": self.root.geometry()})
+        except Exception:  # noqa: BLE001 - geometry is a nicety, never fatal
+            pass
+        try:
+            backend.unload_models()
         except Exception:  # noqa: BLE001
             pass
         self.root.destroy()
