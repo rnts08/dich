@@ -1345,9 +1345,7 @@ class DichApp:
 
     def open_audio(self):
         """Transcribe an audio file, then translate it with accumulating context."""
-        try:
-            from . import speech_engine
-        except ImportError:
+        if speech_engine is None:
             messagebox.showerror(
                 "Speech dependencies missing",
                 "Install with:\n\npip install sounddevice faster-whisper av",
@@ -1387,9 +1385,27 @@ class DichApp:
             speech_engine.FILE_MODEL
             if hasattr(speech_engine, "FILE_MODEL")
             else speech_engine.LIVE_MODEL,
+            on_progress=lambda phase, percent: self.worker.post(
+                self._on_file_progress, phase, percent
+            ),
             on_success=self._on_audio_transcribed,
             on_error=self.on_file_transcription_error,
         )
+
+    def _on_file_progress(self, phase: str, percent):
+        """
+        A file job's phase, already marshalled onto the UI thread by Worker.post.
+
+        percent is None when the engine has no total to divide by — the model
+        load, which on first use is a multi-gigabyte download and must pulse
+        rather than show a fake percentage.
+        """
+        label = f"{phase}…"
+        if percent is None:
+            self.status.set_busy(f"{phase} (first use may download the model)")
+        else:
+            self.status.update(percent, f"{phase} {percent}%")
+        self.mic_status.configure(text=label)
 
     def _on_audio_transcribed(self, result):
         count = len(result.sentences)

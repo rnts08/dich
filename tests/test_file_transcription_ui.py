@@ -121,6 +121,77 @@ def test_finalized_with_no_utterances_says_no_speech():
     assert not any(e[1][0].startswith("done") for e in events if e[0] == "stats")
 
 
+def test_file_progress_updates_status_and_label():
+    """Percent phases drive the real progress bar; None is indeterminate."""
+    events = []
+    app = SimpleNamespace(
+        status=SimpleNamespace(
+            set_busy=lambda *a, **k: events.append(("busy", a, k)),
+            update=lambda pct, stats: events.append(("progress", pct, stats)),
+        ),
+        mic_status=SimpleNamespace(configure=lambda **kw: events.append(("mic", kw))),
+    )
+
+    ui.DichApp._on_file_progress(app, "transcribe", 42)
+
+    assert any(e[0] == "progress" and e[1] == 42 for e in events)
+    assert any(e[0] == "mic" and "transcribe" in e[1].get("text", "") for e in events)
+
+    # a new phase with no percentage (model load) must switch to the pulsing bar
+    ui.DichApp._on_file_progress(app, "model", None)
+
+    assert any(e[0] == "busy" and "model" in e[1][0] for e in events)
+    assert any(e[0] == "mic" and "model" in e[1].get("text", "") for e in events)
+
+
+def test_open_audio_forwards_progress_through_the_worker(monkeypatch):
+    """
+    The engine reports from a worker thread, so progress must be marshalled
+    with Worker.post — touching Tk from that thread raises.
+    """
+    posted = []
+    captured = {}
+
+    def fake_transcribe_file(path, model_name, on_progress=None):
+        captured["on_progress"] = on_progress
+        return SimpleNamespace(sentences=[], duration=1.0)
+
+    app = SimpleNamespace(
+        recording=False,
+        audio_path=None,
+        mic_status=SimpleNamespace(configure=lambda **kw: None),
+        status=SimpleNamespace(set_busy=lambda *a, **k: None, set_hint=lambda t: None),
+        transcript_pane=SimpleNamespace(set=lambda t: None),
+        speech_translation_pane=SimpleNamespace(set=lambda t: None),
+        worker=SimpleNamespace(
+            run=lambda fn, *a, **kw: captured.update(fn=fn, kwargs=kw),
+            post=lambda fn, *a: posted.append((fn, a)),
+        ),
+        root=SimpleNamespace(after=lambda d, fn: None),
+        _new_translator=lambda: None,
+        _start_memory_poll=lambda: None,
+    )
+    app._on_audio_transcribed = lambda result: None
+    app.on_file_transcription_error = lambda exc, tb: None
+    app._on_file_progress = lambda phase, percent: None
+    monkeypatch.setattr(
+        ui,
+        "speech_engine",
+        SimpleNamespace(
+            transcribe_file=fake_transcribe_file, FILE_MODEL="large-v3-turbo"
+        ),
+    )
+    monkeypatch.setattr(ui.filedialog, "askopenfilename", lambda **kw: "/tmp/x.wav")
+
+    ui.DichApp.open_audio(app)
+
+    assert captured["fn"] is fake_transcribe_file
+    progress = captured["kwargs"]["on_progress"]
+    progress("transcribe", 10)
+    assert posted and posted[0][0] == app._on_file_progress
+    assert posted[0][1] == ("transcribe", 10)
+
+
 def test_file_error_names_the_failure_as_transcription():
     """Not "translation failed": the job that failed was the file transcription."""
     events = []
