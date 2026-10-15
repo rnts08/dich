@@ -24,7 +24,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import List, Optional
 
-from . import backend, theme
+from . import backend, quality, theme
 from .backend import (
     CONFIG_PATH,
     Progress,
@@ -1127,6 +1127,16 @@ class DichApp:
             style="Faint.TLabel",
         ).grid(row=22, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
+        self.ocr_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("ocr_enabled", True))
+        )
+        ttk.Checkbutton(
+            form,
+            text="OCR image-based PDFs when they have no text layer (needs "
+            "tesseract + poppler; Vietnamese needs its vie lang data)",
+            variable=self.ocr_var,
+        ).grid(row=23, column=0, columnspan=3, sticky="w", pady=4)
+
         # --- cache ----------------------------------------------------------
         self._section(form, "Translation cache", row=24)
 
@@ -1169,6 +1179,15 @@ class DichApp:
         self.reference_pane.grid(
             row=30, column=0, columnspan=2, sticky="nsew", pady=(10, 0)
         )
+        self.quality_label = ttk.Label(form, text="", style="Faint.TLabel")
+        self.quality_label.grid(row=31, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        theme.RoundedButton(
+            form,
+            "Score vs reference",
+            command=self.score_translation,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=31, column=2, padx=theme.SPACE_2, pady=(4, 0))
         form.rowconfigure(30, weight=1)
         form.columnconfigure(1, weight=1)
 
@@ -2187,6 +2206,7 @@ class DichApp:
                 "buffer_max_seconds": int(self.buffer_var.get()),
                 "push_to_talk": bool(self.push_to_talk_var.get()),
                 "combine_short_utterances": bool(self.combine_var.get()),
+                "ocr_enabled": bool(self.ocr_var.get()),
             }
         )
 
@@ -2227,11 +2247,38 @@ class DichApp:
             on_success=lambda r: (
                 self.reference_pane.set(r),
                 self.status.set_stats("reference ready", GREEN),
+                self._score_if_ready(r),
             ),
             on_error=lambda exc, tb: self._show_error(
                 "Google Translate failed", exc, tb
             ),
         )
+
+    def _show_quality(self, result: dict):
+        """Show how close the current translation is to the reference."""
+        self.quality_label.configure(
+            text=f"quality {result['quality']} · BLEU {result['bleu']} · "
+            f"chrF {result['chrf']} · ROUGE-L {result['rouge_l']}",
+            foreground=GREEN,
+        )
+
+    def _score_if_ready(self, reference: str):
+        """Score against the reference when a translation already exists."""
+        candidate = self.target_pane.get()
+        if candidate and candidate != self.target_pane.placeholder:
+            self._show_quality(quality.score(reference, candidate))
+
+    def score_translation(self):
+        """Debug: score the current translation against the Google reference."""
+        reference = self.reference_pane.get()
+        candidate = self.target_pane.get()
+        if not reference or not candidate or candidate == self.target_pane.placeholder:
+            messagebox.showwarning(
+                "Nothing to score",
+                "Run the Google reference and have a translation first.",
+            )
+            return
+        self._show_quality(quality.score(reference, candidate))
 
     # -- misc -------------------------------------------------------------
     def _show_error(self, title: str, exc: Exception, tb: str):

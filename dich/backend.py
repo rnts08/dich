@@ -19,7 +19,9 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -119,6 +121,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # --- speech behaviour (Milestone 0.2.5) ---
     "push_to_talk": False,  # hold to talk instead of always-on listening
     "combine_short_utterances": False,  # merge short segments before translating
+    "ocr_enabled": True,  # OCR image-based PDFs via tesseract when pypdf yields nothing
 }
 
 
@@ -449,7 +452,94 @@ def estimated_ram_bytes(repo: str) -> Optional[int]:
 
 
 def _read_pdf(file_path: str) -> str:
-    """Extract text from a PDF file."""
+    """Extract text from a PDF file, falling back to OCR for image pages."""
+    text = _pypdf_text(file_path)
+    if text.strip():
+        return text
+    # Scanned / image-only PDF: OCR is the only way to get the text out.
+    if CONFIG.get("ocr_enabled") and tesseract_available():
+        return ocr_pdf(file_path)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# OCR for image-based (scanned) PDFs
+# ---------------------------------------------------------------------------
+# tesseract and pdftoppm are shell commands, not Python packages, so this
+# shells out to them rather than adding a heavy OCR dependency. Only English
+# trained data is guaranteed present ("vie" for Vietnamese is missing on this
+# machine), so Vietnamese diacritics come through imperfectly unless the user
+# installs tesseract's vie lang data.
+
+
+def tesseract_available() -> bool:
+    """True when the tesseract binary is on PATH."""
+    return shutil.which("tesseract") is not None
+
+
+def _tesseract_langs() -> str:
+    """Prefer Vietnamese+English; fall back to English when vie is absent."""
+    try:
+        result = subprocess.run(
+            ["tesseract", "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        langs = result.stdout.split()
+    except (OSError, subprocess.SubprocessError):  # noqa: BLE001
+        langs = []
+    return "vie+eng" if "vie" in langs else "eng"
+
+
+def ocr_image(image_path: str, lang: Optional[str] = None) -> str:
+    """OCR a single image with tesseract; returns the recognized text."""
+    if not tesseract_available():
+        raise RuntimeError(
+            "tesseract is not installed; install it with: brew install tesseract"
+        )
+    lang = lang or _tesseract_langs()
+    result = subprocess.run(
+        ["tesseract", image_path, "stdout", "-l", lang],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    result.check_returncode()
+    return result.stdout
+
+
+def render_pdf_pages(pdf_path: str, out_dir: str, dpi: int = 200) -> List[str]:
+    """Render each PDF page to a PNG via pdftoppm; returns the image paths."""
+    if shutil.which("pdftoppm") is None:
+        raise RuntimeError(
+            "pdftoppm is not installed; install it with: brew install poppler"
+        )
+    prefix = Path(out_dir) / "page"
+    subprocess.run(
+        ["pdftoppm", "-png", "-r", str(dpi), pdf_path, str(prefix)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+    )
+    return sorted(Path(out_dir).glob("page-*.png"))
+
+
+def ocr_pdf(pdf_path: str, lang: Optional[str] = None) -> str:
+    """OCR every page of a PDF and join the results with page markers."""
+    lang = lang or _tesseract_langs()
+    with tempfile.TemporaryDirectory() as td:
+        pages = render_pdf_pages(pdf_path, td)
+        parts = []
+        for page in pages:
+            page = Path(page)
+            parts.append(f"--- page {page.stem} ---\n{ocr_image(str(page), lang)}")
+    return "\n\n".join(parts)
+
+
+def _pypdf_text(file_path: str) -> str:
+    """Text layer of a PDF, or empty string when there is none."""
     try:
         from pypdf import PdfReader
     except ImportError:
@@ -457,8 +547,9 @@ def _read_pdf(file_path: str) -> str:
             import PyPDF2
 
             with open(file_path, "rb") as f:
-                reader = PyPDF2.PdfReader(f)
-                return "\n".join((p.extract_text() or "") for p in reader.pages)
+                return "\n".join(
+                    (p.extract_text() or "") for p in PyPDF2.PdfReader(f).pages
+                )
         except ImportError:
             # Both pypdf and PyPDF2 missing: replace the incidental ImportError
             # with the actionable message rather than chaining it.
