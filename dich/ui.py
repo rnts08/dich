@@ -515,6 +515,7 @@ class DichApp:
         self._mic_opening = False
         self._memory_polling = False
         self._file_transcribing = False
+        self._last_partial = ""
 
         self._build_style()
         self._build_menu()
@@ -1611,6 +1612,10 @@ class DichApp:
         self.mic_status.configure(text="stopped")
         self._stop_memory_poll()
         self.status.reset()
+        # The partial line belongs to the recording; drop it so a stale
+        # "hearing: …" cannot outlive the session that produced it.
+        self._last_partial = ""
+        self._show_partial("")
         try:
             from . import speech_engine
 
@@ -1644,6 +1649,13 @@ class DichApp:
             return
 
         while self.recording:
+            # The utterance still being assembled, so text appears while the
+            # speaker is still talking rather than only at the full stop.
+            # Pushed through Worker.post because this loop is on its own thread.
+            partial = speech_engine.latest_partial()
+            if partial != self._last_partial:
+                self._last_partial = partial
+                self.worker.post(self._show_partial, partial)
             for sentence in speech_engine.drain_final_sentences():
                 key = sentence.strip()
                 if not key:
@@ -1658,6 +1670,18 @@ class DichApp:
                     on_error=self._on_speech_error,
                 )
             time.sleep(0.3)
+
+    def _show_partial(self, text: str):
+        """
+        Show the in-progress transcript on the hint line.
+
+        The hint line is the one readout the recording loop owns exclusively —
+        the memory poll and the translation callbacks never touch it — so a
+        partial can be replaced and cleared without clobbering anything else.
+        It is a view of the engine's pending sentence, not extra text: when the
+        sentence is emitted the engine clears it and so does this.
+        """
+        self.status.set_hint(f"hearing: {text}" if text else "")
 
     def _on_speech_utterance(self, _result=None):
         stats = self.translator.stats()

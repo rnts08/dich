@@ -412,6 +412,17 @@ class SpeechEngine:
             self._emit(self._pending)
             self._pending = ""
 
+    def latest_partial(self) -> str:
+        """
+        The utterance currently being assembled.
+
+        This is the same `_pending` buffer the sentence rules build on, so a
+        partial transcript is simply a view of it: it fills as windows are
+        transcribed and empties when a sentence is emitted. Nothing extra to
+        keep in sync, and nothing to leak into the translation path.
+        """
+        return self._pending
+
     # -- consumption ------------------------------------------------------
     def final_sentences(self) -> Iterator[str]:
         while True:
@@ -844,6 +855,13 @@ def drain_final_sentences() -> list[str]:
     if _engine is None:
         return []
     return _engine.drain_final_sentences()
+
+
+def latest_partial() -> str:
+    """The sentence still being assembled, or "" when nothing is mid-flight."""
+    if _engine is None:
+        return ""
+    return _engine.latest_partial()
 
 
 # The idle report must carry every key the live engine reports. The UI reads
