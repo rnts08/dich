@@ -168,6 +168,10 @@ class SpeechEngine:
         self._pending = ""
         self._pending_segments = 0
         self._last_samples = None
+        # Running peak of the captured audio, for the input-level meter. It
+        # decays on every read so the meter follows speech instead of latching
+        # onto the loudest moment of the session.
+        self._peak = 0.0
         self._final: "queue.Queue[str]" = queue.Queue()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -201,6 +205,8 @@ class SpeechEngine:
             mono = np.ascontiguousarray(indata[:, 0])
             self._buffer.append((mono, len(mono)))
             self._buffered += len(mono)
+            if mono.size:
+                self._peak = max(self._peak, float(np.abs(mono).max()))
             # Drop the oldest audio once past the cap. A transcriber that
             # cannot keep up would otherwise grow this without limit.
             limit = int(self.buffer_max_seconds * SAMPLE_RATE)
@@ -238,6 +244,10 @@ class SpeechEngine:
             samples = self._buffered
             blocks = len(self._buffer)
             dropped = self._dropped
+            peak = self._peak
+        # Decay the meter on each read. The UI polls every 500 ms, so this
+        # settles within a couple of seconds of the speaker going quiet.
+        self._peak = peak * 0.6
         return {
             "samples": samples,
             "seconds": samples / SAMPLE_RATE,
@@ -246,6 +256,7 @@ class SpeechEngine:
             "dropped_seconds": dropped / SAMPLE_RATE,
             "window_seconds": self.window_seconds,
             "buffer_max_seconds": self.buffer_max_seconds,
+            "peak": peak,
             # How far the transcriber trails the speaker. Positive means it is
             # behind; a countdown that reads 0.0 while nothing is arriving is
             # worse than saying so.
@@ -911,6 +922,7 @@ _IDLE_USAGE = {
     "window_seconds": 0.0,
     "buffer_max_seconds": 0.0,
     "behind_by": 0.0,
+    "peak": 0.0,
 }
 
 
