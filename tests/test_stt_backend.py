@@ -33,7 +33,9 @@ def test_configured_backend_reads_the_config(monkeypatch):
 
 def test_whisper_model_routes_to_mlx(monkeypatch):
     fake = SimpleNamespace(
-        available=lambda: True, MLXWhisper=lambda name: ("mlx", name)
+        available=lambda: True,
+        make_model=lambda name: ("mlx", name),
+        is_gpu_only=lambda name: False,
     )
     monkeypatch.setattr(speech_engine, "mlx_stt", fake)
 
@@ -41,6 +43,38 @@ def test_whisper_model_routes_to_mlx(monkeypatch):
         "mlx",
         "large-v3-turbo",
     )
+
+
+def test_gpu_only_preset_falls_back_to_a_cpu_model(monkeypatch):
+    """Qwen3 has no faster-whisper equivalent; WhisperModel would raise."""
+
+    class FakeWhisper:
+        def __init__(self, name, device, compute_type):
+            self.name = name
+
+    monkeypatch.setattr(
+        speech_engine,
+        "mlx_stt",
+        SimpleNamespace(
+            available=lambda: False,
+            make_model=lambda name: None,
+            is_gpu_only=lambda name: name.startswith("qwen3"),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisper)
+    )
+
+    model = speech_engine._whisper_model("qwen3-0.6b", backend="ctranslate2")
+
+    assert model.name == speech_engine.LIVE_MODEL
+
+
+def test_speech_models_list_includes_the_gpu_presets():
+    ids = [name for name, _label in speech_engine.SPEECH_MODELS]
+    assert "large-v3-turbo" in ids
+    assert "qwen3-0.6b" in ids
+    assert speech_engine.speech_model_label("qwen3-0.6b") != "qwen3-0.6b"
 
 
 def test_whisper_model_falls_back_to_cpu_when_no_gpu(monkeypatch):
@@ -53,7 +87,11 @@ def test_whisper_model_falls_back_to_cpu_when_no_gpu(monkeypatch):
     monkeypatch.setattr(
         speech_engine,
         "mlx_stt",
-        SimpleNamespace(available=lambda: False, MLXWhisper=lambda name: None),
+        SimpleNamespace(
+            available=lambda: False,
+            make_model=lambda name: None,
+            is_gpu_only=lambda name: False,
+        ),
     )
     monkeypatch.setitem(
         sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisper)

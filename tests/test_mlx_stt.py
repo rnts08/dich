@@ -26,6 +26,63 @@ def test_repo_for_passes_a_repo_id_through():
     assert mlx_stt.repo_for("someone/custom-whisper") == "someone/custom-whisper"
 
 
+def test_repo_for_knows_the_non_whisper_gpu_models():
+    assert mlx_stt.repo_for("qwen3-0.6b") == "mlx-community/Qwen3-ASR-0.6B-4bit"
+    assert mlx_stt.repo_for("qwen3-1.7b") == "mlx-community/Qwen3-ASR-1.7B-8bit"
+    assert mlx_stt.is_gpu_only("qwen3-0.6b") is True
+    assert mlx_stt.is_gpu_only("small") is False
+
+
+def test_make_model_picks_the_family_by_repo():
+    assert isinstance(mlx_stt.make_model("small"), mlx_stt.MLXWhisper)
+    assert isinstance(mlx_stt.make_model("qwen3-0.6b"), mlx_stt.MLXQwen3)
+    assert isinstance(
+        mlx_stt.make_model("someone/Qwen3-ASR-1.7B-bf16"), mlx_stt.MLXQwen3
+    )
+
+
+def _fake_qwen_output():
+    return SimpleNamespace(
+        text=" Xin chào. Tạm biệt.",
+        language=["Vietnamese"],  # Qwen3 reports a list
+        segments=[{"text": " Xin chào. Tạm biệt.", "start": 0.0, "end": 2.0}],
+    )
+
+
+def test_qwen3_maps_vi_to_the_prompt_name_and_converts_segments(monkeypatch):
+    calls = []
+
+    class FakeModel:
+        def generate(self, audio, **kwargs):
+            calls.append(kwargs)
+            return _fake_qwen_output()
+
+    monkeypatch.setattr(mlx_stt, "_load_repo", lambda repo: FakeModel())
+    model = mlx_stt.MLXQwen3("qwen3-0.6b")
+
+    segments, info = model.transcribe(np.zeros(16000, dtype=np.float32), language="vi")
+
+    assert calls[0]["language"] == "Vietnamese"
+    assert [s.text for s in segments] == ["Xin chào. Tạm biệt."]
+    assert segments[0].end == 2.0
+    assert info.language == "vi"  # a code, not the prompt name
+
+
+def test_qwen3_without_segments_keeps_the_text(monkeypatch):
+    """Some responses carry no timestamps; the text must not be dropped."""
+
+    class FakeModel:
+        def generate(self, audio, **kwargs):
+            return SimpleNamespace(text="Chỉ có chữ.", language=None, segments=None)
+
+    monkeypatch.setattr(mlx_stt, "_load_repo", lambda repo: FakeModel())
+    model = mlx_stt.MLXQwen3("qwen3-1.7b")
+
+    segments, _info = model.transcribe(np.zeros(16000, dtype=np.float32))
+
+    assert [s.text for s in segments] == ["Chỉ có chữ."]
+
+
 def _fake_output():
     return SimpleNamespace(
         text=" Đây là một câu. Câu thứ hai.",

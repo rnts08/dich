@@ -83,6 +83,11 @@ TRAILING_RATIO = 0.2
 # threshold in _trailing_silence uses an RMS figure; this is the loudest single
 # sample, which catches the quiet-but-warm mic noise a real device produces.
 SILENCE_FLOOR = 0.003
+# Whisper reports how likely a segment is to be non-speech. Above this, the
+# segment is a silence artefact rather than speech. (The CPU path never needed
+# it because faster-whisper's vad_filter removed those windows; the GPU path
+# has no such filter, so the file path must drop them itself.)
+NO_SPEECH_THRESHOLD = 0.6
 # Batch/file transcription favours accuracy; live mic keeps up with a speaker.
 # Realtime depends on the window as much as the model, because every
 # transcribe() call carries fixed overhead. Measured warm for Vietnamese here:
@@ -101,7 +106,9 @@ SPEECH_MODELS = [
     ("base", "base — rough, 8× realtime"),
     ("small", "small — keeps up, ~2× realtime (default)"),
     ("medium", "medium — better names, 0.5× at 2s / 2.2× at 10s"),
-    ("large-v3-turbo", "large-v3-turbo — best, slowest"),
+    ("large-v3-turbo", "large-v3-turbo — best, slowest on CPU, 31× on GPU"),
+    ("qwen3-0.6b", "Qwen3-ASR 0.6B — fastest, GPU only"),
+    ("qwen3-1.7b", "Qwen3-ASR 1.7B — strong, GPU only"),
 ]
 SPEECH_MODEL_IDS = [name for name, _label in SPEECH_MODELS]
 
@@ -615,8 +622,13 @@ def _whisper_model(name: str, backend: Optional[str] = None):
     """
     if (backend or _configured_backend()) == "mlx" and mlx_stt is not None:
         if mlx_stt.available():
-            return mlx_stt.MLXWhisper(name)
+            return mlx_stt.make_model(name)
         logger.warning("stt_backend=mlx but no GPU is reachable; using the CPU")
+    if mlx_stt is not None and mlx_stt.is_gpu_only(name):
+        # A GPU-only preset (Qwen3) has no faster-whisper equivalent; silently
+        # handing "qwen3-0.6b" to WhisperModel would fail at load time.
+        logger.warning(f"{name} needs the GPU backend; falling back to {LIVE_MODEL}")
+        name = LIVE_MODEL
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:
@@ -786,6 +798,15 @@ def transcribe_file(
     report("decode", 100)
     logger.info(f"Decoded {path}: {len(audio) / SAMPLE_RATE:.1f}s at {SAMPLE_RATE} Hz")
 
+    duration = round(len(audio) / SAMPLE_RATE, 1)
+    if audio.size == 0 or float(np.abs(audio).max()) < SILENCE_FLOOR:
+        # Never hand a silent buffer to a model on any backend: Whisper invents
+        # text on silence, and the GPU path has no vad_filter to hide it. The
+        # CPU path's vad_filter was the only thing doing this before, which is
+        # why moving to the GPU made silent files start producing sentences.
+        logger.info(f"Effectively silent: {path} — not transcribing")
+        return TranscriptionResult(model=model_name, duration=duration)
+
     report("model", None)
     model = _whisper_model(model_name)
     report("transcribe", 0)
@@ -802,12 +823,15 @@ def transcribe_file(
         language=info.language,
         language_probability=round(float(info.language_probability), 3),
         model=model_name,
-        duration=round(len(audio) / SAMPLE_RATE, 1),
+        duration=duration,
     )
     total = float(getattr(info, "duration", 0.0) or 0.0) or result.duration
     for seg in segments:
         text = seg.text.strip()
-        if text and not _is_hallucination(text):
+        # A segment Whisper itself flags as non-speech is a silence artefact,
+        # not speech that happens to be quiet.
+        no_speech = float(getattr(seg, "no_speech_prob", 0.0) or 0.0)
+        if text and no_speech < NO_SPEECH_THRESHOLD and not _is_hallucination(text):
             result.sentences.append(text)
             result.timings.append((round(seg.start, 2), round(seg.end, 2)))
         if total > 0:
