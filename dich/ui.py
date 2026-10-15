@@ -873,7 +873,9 @@ class DichApp:
             state="readonly",
         )
         self.mic_model_combo.grid(row=13, column=1, sticky="w", pady=6)
-        self._set_mic_model_label(backend.CONFIG.get("mic_model"))
+        self._set_mic_model_label(
+            backend.CONFIG.get("mic_model", speech_engine.default_live_model())
+        )
 
         ttk.Label(
             form,
@@ -1165,7 +1167,7 @@ class DichApp:
         for name, label in speech_engine.SPEECH_MODELS:
             if label == chosen:
                 return name
-        return str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL))
+        return str(backend.CONFIG.get("mic_model", speech_engine.default_live_model()))
 
     def _on_preload_toggled(self):
         """Turning the option on should load the model now, not just persist it."""
@@ -1564,7 +1566,9 @@ class DichApp:
 
         self.worker.run(
             speech_engine.start_mic_stream,
-            model_size=str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL)),
+            model_size=str(
+                backend.CONFIG.get("mic_model", speech_engine.default_live_model())
+            ),
             device_index=backend.CONFIG.get("mic_device_index"),
             window_seconds=float(
                 backend.CONFIG.get(

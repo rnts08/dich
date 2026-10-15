@@ -101,9 +101,9 @@ DEFAULT_MODEL = LIVE_MODEL
 SPEECH_MODELS = [
     ("tiny", "tiny — very rough, 16× realtime"),
     ("base", "base — rough, 8× realtime"),
-    ("small", "small — keeps up, ~2× realtime (default)"),
+    ("small", "small — keeps up on CPU, ~2× realtime"),
     ("medium", "medium — better names, 0.5× at 2s / 2.2× at 10s"),
-    ("large-v3-turbo", "large-v3-turbo — best, slowest on CPU, 31× on GPU"),
+    ("large-v3-turbo", "large-v3-turbo — best, 31× on GPU (GPU default)"),
     ("qwen3-0.6b", "Qwen3-ASR 0.6B — fastest, GPU only"),
     ("qwen3-1.7b", "Qwen3-ASR 1.7B — strong, GPU only"),
 ]
@@ -581,7 +581,7 @@ def _validate_device(device_index: Optional[int]) -> Optional[int]:
 
 
 def start_mic_stream(
-    model_size: str = DEFAULT_MODEL,
+    model_size: Optional[str] = None,
     device_index: Optional[int] = None,
     window_seconds: Optional[float] = None,
     buffer_max_seconds: float = BUFFER_MAX_SECONDS,
@@ -590,7 +590,8 @@ def start_mic_stream(
     Open the microphone and begin transcribing.
 
     Args:
-        model_size: Whisper model. Use LIVE_MODEL to keep up with a speaker.
+        model_size: Whisper model. None uses the backend-appropriate default
+            (the accurate model on the GPU, `small` on the CPU).
         device_index: Microphone to open; None uses the system default.
         window_seconds: Audio per transcription window. Shorter means the first
             words appear sooner, at the cost of realtime factor. None uses the
@@ -600,7 +601,7 @@ def start_mic_stream(
     global _engine
     if _engine is None:
         _engine = SpeechEngine(
-            model_size=model_size,
+            model_size=model_size or default_live_model(),
             device_index=_validate_device(device_index),
             window_seconds=(
                 default_window_seconds() if window_seconds is None else window_seconds
@@ -698,6 +699,24 @@ def default_window_seconds() -> float:
         )
     except Exception:  # noqa: BLE001 - a broken probe must not break the UI
         return WINDOW_SECONDS_CPU
+
+
+def default_live_model() -> str:
+    """
+    Live model to use when the config does not name one.
+
+    `small` was chosen for the CPU, where it is the only model that keeps up.
+    On the GPU the accurate model is also the fast one — turbo decodes a 5s
+    window in ~160 ms — so the tradeoff that forced `small` no longer exists,
+    and the accurate model is what makes unfamiliar voices and proper nouns
+    come through. An explicit `mic_model` in the config still wins.
+    """
+    try:
+        if _configured_backend() == "mlx":
+            return "large-v3-turbo"
+    except Exception:  # noqa: BLE001 - a broken probe must not break the UI
+        pass
+    return LIVE_MODEL
 
 
 def load_audio(

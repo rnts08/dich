@@ -98,6 +98,24 @@ def test_default_window_survives_a_broken_backend_probe(monkeypatch):
     assert speech_engine.default_window_seconds() == speech_engine.WINDOW_SECONDS_CPU
 
 
+def test_default_live_model_is_the_accurate_one_on_the_gpu(monkeypatch):
+    """`small` was a CPU compromise; on the GPU the accurate model is also fast."""
+    monkeypatch.setattr(speech_engine, "_configured_backend", lambda: "mlx")
+    assert speech_engine.default_live_model() == "large-v3-turbo"
+
+    monkeypatch.setattr(speech_engine, "_configured_backend", lambda: "ctranslate2")
+    assert speech_engine.default_live_model() == speech_engine.LIVE_MODEL
+
+
+def test_default_live_model_survives_a_broken_backend_probe(monkeypatch):
+    def boom():
+        raise RuntimeError("no mlx")
+
+    monkeypatch.setattr(speech_engine, "_configured_backend", boom)
+
+    assert speech_engine.default_live_model() == speech_engine.LIVE_MODEL
+
+
 def test_start_mic_stream_uses_the_backend_default_when_none_is_given(monkeypatch):
     captured = {}
 
@@ -111,11 +129,13 @@ def test_start_mic_stream_uses_the_backend_default_when_none_is_given(monkeypatc
     monkeypatch.setattr(speech_engine, "SpeechEngine", FakeEngine)
     monkeypatch.setattr(speech_engine, "_validate_device", lambda index: None)
     monkeypatch.setattr(speech_engine, "default_window_seconds", lambda: 5.0)
+    monkeypatch.setattr(speech_engine, "default_live_model", lambda: "large-v3-turbo")
     monkeypatch.setattr(speech_engine, "_engine", None)
 
     speech_engine.start_mic_stream(window_seconds=None)
 
     assert captured["window_seconds"] == 5.0
+    assert captured["model_size"] == "large-v3-turbo"
     assert captured["started"] is True
 
 
@@ -132,11 +152,13 @@ def test_start_mic_stream_still_honours_an_explicit_window(monkeypatch):
     monkeypatch.setattr(speech_engine, "SpeechEngine", FakeEngine)
     monkeypatch.setattr(speech_engine, "_validate_device", lambda index: None)
     monkeypatch.setattr(speech_engine, "default_window_seconds", lambda: 5.0)
+    monkeypatch.setattr(speech_engine, "default_live_model", lambda: "large-v3-turbo")
     monkeypatch.setattr(speech_engine, "_engine", None)
 
-    speech_engine.start_mic_stream(window_seconds=2.5)
+    speech_engine.start_mic_stream(window_seconds=2.5, model_size="small")
 
     assert captured["window_seconds"] == 2.5
+    assert captured["model_size"] == "small"
 
 
 def test_whisper_model_falls_back_to_cpu_when_no_gpu(monkeypatch):

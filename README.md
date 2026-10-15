@@ -128,10 +128,10 @@ Two ways in:
 - **Record** — listens to the microphone, transcribes Vietnamese, and translates
   as it goes.
 - **Open Audio…** — transcribes an audio file (`mp3`, `wav`, `m4a`, …). This uses
-  `large-v3-turbo`, which is far more accurate in Vietnamese than the live model
-  but runs at about 3.6× realtime, so a 38-minute recording takes roughly 14
-  minutes. The live mic uses `small` by default, which keeps up with a speaker
-  at a 2-second window (5-second windows on the GPU — see below).
+  `large-v3-turbo`, which is far more accurate in Vietnamese than `small` but
+  runs at about 3.6× realtime on the CPU, so a 38-minute recording takes roughly
+  14 minutes there. The live mic uses `small` on the CPU, and
+  `large-v3-turbo` on the GPU, where it keeps up easily (see below).
 
 The translation is **not** fixed on first pass. Each utterance is translated with
 the preceding ones supplied as conversation turns, so honorifics and pronouns
@@ -157,19 +157,21 @@ In Settings → Microphone:
 | **Transcription window** | Seconds of audio per transcription. |
 | **Buffer ceiling** | Seconds of audio held before the oldest is dropped. |
 
-The speech model defaults to `small`, measured for Vietnamese on an M5:
+The speech model defaults by backend, measured for Vietnamese on an M5:
 
 | Model | Realtime | Accuracy |
 |---|---|---|
 | `tiny` | 16× | very rough |
 | `base` | 8× | rough |
-| `small` | ~2× at 2s windows | keeps up (default) |
+| `small` | ~2× at 2s windows | keeps up (CPU default) |
 | `medium` | 0.49× at 2s / 2.2× at 10s | better proper nouns |
-| `large-v3-turbo` | slowest | best |
+| `large-v3-turbo` | 3.6× on CPU, 31× on GPU | best (GPU default) |
 
-`small` is the default because it keeps up at a 2-second window; choose
-`medium` or `large-v3-turbo` when a name being heard correctly matters more
-than latency.
+On the CPU the default is `small`, the only model that keeps up at a 2-second
+window. On the GPU (`mlx-audio`) the default is `large-v3-turbo`: it decodes a
+5-second window in ~160 ms there, so the accuracy/latency tradeoff that forced
+`small` is gone, and the accurate model is what makes unfamiliar voices and
+proper nouns come through. Picking a model in Settings overrides both defaults.
 
 Realtime depends on the window as much as on the model, since every
 `transcribe()` call carries fixed overhead:
