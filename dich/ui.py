@@ -911,7 +911,9 @@ class DichApp:
         )
         self.window_var = tk.DoubleVar(
             value=float(
-                backend.CONFIG.get("window_seconds", speech_engine.WINDOW_SECONDS)
+                backend.CONFIG.get(
+                    "window_seconds", speech_engine.default_window_seconds()
+                )
             )
         )
         ttk.Spinbox(
@@ -1565,7 +1567,9 @@ class DichApp:
             model_size=str(backend.CONFIG.get("mic_model", speech_engine.LIVE_MODEL)),
             device_index=backend.CONFIG.get("mic_device_index"),
             window_seconds=float(
-                backend.CONFIG.get("window_seconds", speech_engine.WINDOW_SECONDS)
+                backend.CONFIG.get(
+                    "window_seconds", speech_engine.default_window_seconds()
+                )
             ),
             buffer_max_seconds=float(
                 backend.CONFIG.get(

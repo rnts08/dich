@@ -58,16 +58,20 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-# A short window is what makes the first words appear quickly. The cost is the
-# realtime factor, because every transcribe() call carries fixed overhead.
-# Measured warm for Vietnamese on this M5:
-#     2.0s window, medium -> 0.49x realtime  (text appears fast, falls behind)
-#     2.0s window, small  -> ~2x realtime    (keeps up)
-#    10.0s window, medium -> 2.2x realtime   (lags the speaker by ~10s)
-# Falling behind is tolerable while the buffer still holds the audio -- it
-# catches up whenever the speaker pauses. Keeping up is why `small` is the
-# live default rather than `medium`.
-WINDOW_SECONDS = 2.0
+# Window length is the quality/latency dial, and its right value depends on the
+# backend, because every transcribe() call carries fixed overhead:
+#     2.0s window, small on CPU  -> ~2x realtime   (only speed that keeps up)
+#     2.0s window, medium on CPU -> 0.49x realtime (falls behind)
+#    10.0s window, medium on CPU -> 2.2x realtime  (lags the speaker by ~10s)
+#     5.0s window, turbo on GPU  -> ~160 ms        (keeps up with room to spare)
+# On the GPU the same 5s window costs little and carries more context than 2s,
+# which measurably improves Vietnamese accuracy; on the CPU a 5s window would
+# put the transcriber behind a live speaker, so the short window stays there.
+# These are the defaults only — `window_seconds` in the config overrides them.
+WINDOW_SECONDS_CPU = 2.0
+WINDOW_SECONDS_GPU = 5.0
+# Kept as the CPU figure so older callers and configs keep the meaning they had.
+WINDOW_SECONDS = WINDOW_SECONDS_CPU
 MIN_SENTENCE_CHARS = 8  # drop tiny fragments ("uh", "vâng" alone)
 # Segments to accumulate before flushing. Whisper returns several segments per
 # window; without a cap, continuous speech parks everything in _pending.
@@ -89,13 +93,6 @@ SILENCE_FLOOR = 0.003
 # has no such filter, so the file path must drop them itself.)
 NO_SPEECH_THRESHOLD = 0.6
 # Batch/file transcription favours accuracy; live mic keeps up with a speaker.
-# Realtime depends on the window as much as the model, because every
-# transcribe() call carries fixed overhead. Measured warm for Vietnamese here:
-#     2.0s window, medium -> 0.49x realtime  (text appears fast, falls behind)
-#     2.0s window, small  -> ~2x realtime    (keeps up)
-#    10.0s window, medium -> 2.2x realtime   (lags the speaker by ~10s)
-# Falling behind is tolerable while the buffer holds the audio -- it catches up
-# whenever the speaker pauses -- but keeping up is the default, so `small`.
 FILE_MODEL = "large-v3-turbo"
 LIVE_MODEL = "small"
 DEFAULT_MODEL = LIVE_MODEL
@@ -586,7 +583,7 @@ def _validate_device(device_index: Optional[int]) -> Optional[int]:
 def start_mic_stream(
     model_size: str = DEFAULT_MODEL,
     device_index: Optional[int] = None,
-    window_seconds: float = WINDOW_SECONDS,
+    window_seconds: Optional[float] = None,
     buffer_max_seconds: float = BUFFER_MAX_SECONDS,
 ) -> SpeechEngine:
     """
@@ -596,7 +593,8 @@ def start_mic_stream(
         model_size: Whisper model. Use LIVE_MODEL to keep up with a speaker.
         device_index: Microphone to open; None uses the system default.
         window_seconds: Audio per transcription window. Shorter means the first
-            words appear sooner, at the cost of realtime factor.
+            words appear sooner, at the cost of realtime factor. None uses the
+            backend-appropriate default.
         buffer_max_seconds: Audio to hold before the oldest is dropped.
     """
     global _engine
@@ -604,7 +602,9 @@ def start_mic_stream(
         _engine = SpeechEngine(
             model_size=model_size,
             device_index=_validate_device(device_index),
-            window_seconds=window_seconds,
+            window_seconds=(
+                default_window_seconds() if window_seconds is None else window_seconds
+            ),
             buffer_max_seconds=buffer_max_seconds,
         )
         _engine.start()
@@ -682,6 +682,22 @@ def _configured_backend() -> str:
     except Exception:  # noqa: BLE001 - config is unavailable in some entry points
         pass
     return stt_backend(choice, gpu_available=_gpu_available())
+
+
+def default_window_seconds() -> float:
+    """
+    Window length to use when the config does not name one.
+
+    The GPU can afford the longer window (see the constants at the top): more
+    context per decode for a latency the model still absorbs. The CPU cannot, so
+    it keeps the short window.
+    """
+    try:
+        return (
+            WINDOW_SECONDS_GPU if _configured_backend() == "mlx" else WINDOW_SECONDS_CPU
+        )
+    except Exception:  # noqa: BLE001 - a broken probe must not break the UI
+        return WINDOW_SECONDS_CPU
 
 
 def load_audio(

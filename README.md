@@ -131,7 +131,7 @@ Two ways in:
   `large-v3-turbo`, which is far more accurate in Vietnamese than the live model
   but runs at about 3.6× realtime, so a 38-minute recording takes roughly 14
   minutes. The live mic uses `small` by default, which keeps up with a speaker
-  at a 2-second window.
+  at a 2-second window (5-second windows on the GPU — see below).
 
 The translation is **not** fixed on first pass. Each utterance is translated with
 the preceding ones supplied as conversation turns, so honorifics and pronouns
@@ -190,6 +190,12 @@ A window that produces text fast does not have to keep up — the buffer holds
 the audio and it catches up during a pause. That is what the buffer ceiling is
 for: raise it to let a slower model catch up, or to hold a long recording for
 re-transcribing. `small` at 2s keeps up (1.3x), so the countdown stays short.
+
+The default window follows the backend. On the CPU it stays at 2s, because a
+longer window there would put the transcriber behind the speaker. On the GPU
+(`mlx-audio`) it is **5s**: the same window costs about 160 ms on
+`large-v3-turbo`, and the extra context is measurably more accurate than 2s.
+Setting **Transcription window** in Settings overrides either default.
 
 Resolution shows the real sample rate, so a microphone that cannot do 16 kHz is
 visible before it fails. **Rescan** picks up mics plugged in or removed later,
