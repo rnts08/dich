@@ -1,6 +1,6 @@
 # Dịch — Backlog
 
-Last reviewed: 2026-10-12 · version **0.2.35** · branch `main`
+Last reviewed: 2026-10-16 · version **0.2.40** · branch `main`
 
 This is the working list of what is left, ordered by priority rather than by
 milestone. `ROADMAP.md` keeps the longer-horizon shape; this file is what to pick
@@ -17,29 +17,31 @@ Working today, verified against the code rather than assumed:
 
 - **Text translation** — PDF, DOCX, DOCM, DOC, RTF, Markdown, plain text →
   English, batched for long documents, cached so unchanged input is instant.
-- **Speech** — mic or audio file → Vietnamese transcript → translation, with the
-  first words appearing ~1.2s after speech starts, and translations that improve
-  as context accumulates.
+- **Speech** — mic or audio file → Vietnamese transcript → translation, with a
+  partial transcript shown while the speaker is still talking, and translations
+  that improve as context accumulates. Runs on the GPU via `mlx-audio`
+  (`large-v3-turbo`, 31× realtime), CPU `faster-whisper` as fallback.
 - **Config and models** under `~/.config/dich`, loading offline. No server
   process to run.
 - **Menu bar, design tokens, rounded controls, markdown rendering, buffer-memory
   readout, licence and About.**
-- **Tests** — an 80-case suite (unit + golden-file quality gate) under `tests/`,
-  with CI running it and `py_compile` on every push.
+- **Tests** — a 132-case suite (unit + golden-file quality gate) under `tests/`,
+  run locally by the pre-commit hook (CI is deliberately off; see below).
 
-Not working, or not present: **no packaging**, **no streaming output**, and the
-microphone has never been confirmed working with a human speaker — only with
-recorded audio played through speakers.
+Not working, or not present: **no packaging**, **no token-by-token streaming of
+the *translation***, and the microphone has never been confirmed working with a
+human speaker — only with recorded audio played through speakers.
 
 ---
 
 ## P0 — blocking
 
-None open. The suite and CI gate landed in 0.2.26–0.2.35, closing Milestone 0.5
-— see `ROADMAP.md`. Writing the first sentence-assembly test immediately found
-two more shipped bugs (the punctuation flush trigger had never fired, and
+None open. The suite landed in 0.2.26–0.2.35, closing Milestone 0.5 — see
+`ROADMAP.md`. Writing the first sentence-assembly test immediately found two
+more shipped bugs (the punctuation flush trigger had never fired, and
 `_trailing_silence(None)` crashed), which is the argument for the suite in one
-sentence.
+sentence. The suite is run locally by the pre-commit hook; CI was removed on
+purpose (see the notes at the end).
 
 ---
 
@@ -62,7 +64,16 @@ sentence.
 ### Confirm the microphone end to end
 The only untested path with a real person. Recorded audio fed through speakers
 works; a human speaking has never been confirmed.
+
+Evidence from recorded material (2026-10-16): a level sweep of real Vietnamese
+speech through the live window path still transcribes down to about −40 dB
+(peak 0.0076, well under any sane mic gain); only −50 dB (peak 0.0024, below
+`SILENCE_FLOOR`) is dropped. Nine 20 s excerpts spread across 38 minutes of a
+multi-speaker dictation file all produced text, so varied voices transcribe
+from a file. The failure is therefore at the live mic or its environment, not
+in the filters — it cannot be reproduced without a person at a microphone.
 - [ ] Listen with a Vietnamese speaker and record what actually comes out
+- [ ] Check the input device and System Settings → Microphone permission first
 - [ ] If accuracy is the problem, act on it; if latency is, tune the window
 
 ### Install guide
@@ -73,18 +84,28 @@ works; a human speaking has never been confirmed.
 ## P2 — real improvements
 
 ### Speech quality
-- [ ] **Move transcription onto the GPU.** `mlx-audio` 0.5.8 is installed but
-  cannot load `mlx-community/whisper-large-v3-turbo` (raises `Processor not
-  found`, including from its own CLI). Making it work dissolves the accuracy vs
-  latency tradeoff entirely — today `small` keeps up at 2s but mis-hears names,
-  and `medium` reads names but falls behind at 0.49× realtime.
+- [x] **Move transcription onto the GPU** (0.2.36–0.2.40). The blocker was the
+  repo layout, not mlx-audio: `mlx-community/whisper-large-v3-turbo` ships
+  weights only, so `get_tokenizer()` raised `Processor not found`. Model ids now
+  map to the `-asr-fp16` repos, which carry the full processor. `mlx-audio`
+  runs Whisper and Qwen3-ASR; `faster-whisper` remains the CPU fallback, chosen
+  by `stt_backend` (`auto` prefers the GPU). Measured on an M5: turbo 31×
+  realtime, Qwen3-ASR 0.6B 30×, both far ahead of the CPU.
+- [x] Live partial transcript while the user is still speaking (0.2.40) — the
+  engine's pending sentence is shown on the status line and updates per window.
+- [x] GPU-appropriate live defaults (0.2.40): 5 s window and `large-v3-turbo` on
+  the GPU, 2 s and `small` on the CPU. Trade-off worth knowing: a 5 s window
+  means the first *sentence* lands later than the old 1.2 s, but the partial
+  line fills sooner and accuracy on unfamiliar voices is markedly better.
+- [ ] Streaming *translated* output token by token — the engine can already
+  produce it; the UI does not use it yet (partials above are the transcript,
+  not the translation)
 - [ ] Push-to-talk as an alternative to always-on listening
-- [ ] Live partial transcript while the user is still speaking
-- [ ] Streaming translated output token by token — the engine can already
-  produce it; the UI does not use it yet
 - [ ] Re-scan the retained buffer for an alternative transcript, as originally
   intended
 - [ ] Tune silence threshold and minimum sentence length against real speech
+  (the floor survived a −40 dB level sweep; the marker list still drops genuine
+  "cảm ơn các bạn" — decide whether that trade is right)
 
 ### Text translation
 - [ ] Preserve PDF layout instead of extracting a flat text stream
@@ -137,9 +158,19 @@ These cost real debugging time. They are constraints, not tasks:
 - **A `content` list cannot be passed to faster-whisper either.** Its
   `decode_audio()` calls `av.open(metadata_errors=...)`, which the installed
   PyAV rejects — audio is decoded in-process instead.
+- **Whisper hallucinates on silence on every backend.** The CPU path was only
+  saved by faster-whisper's `vad_filter`, which `mlx-audio` does not accept.
+  The silence floor in `speech_engine` therefore guards both paths, and the file
+  path drops segments the model itself flags as non-speech. Do not remove it to
+  "hear more".
+- **The mlx-audio repo trap.** Weights-only repos such as
+  `mlx-community/whisper-large-v3-turbo` have no processor, so `get_tokenizer()`
+  raises `Processor not found`. Model ids map to the `-asr-fp16` repos, which
+  carry the tokenizer and preprocessor.
 - **The hallucination filter drops genuine speech.** "cảm ơn các bạn" is removed
   deliberately, because in YouTube-trained Whisper it is overwhelmingly an
-  artefact.
+  artefact. It is also a phrase a real person says — the trade was made for
+  silence-hallucination and is worth revisiting against real speech.
 
 ---
 
