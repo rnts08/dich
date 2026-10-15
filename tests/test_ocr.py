@@ -144,3 +144,33 @@ def test_read_pdf_returns_text_layer_when_present(monkeypatch, backend):
 
     assert backend._read_pdf("x.pdf") == "real text"
     assert called == []
+
+
+def test_read_pdf_uses_pdftotext_when_pypdf_empty(monkeypatch, backend):
+    """A layout-preserving extractor is used when pypdf yields nothing."""
+    fake_pypdf = types.ModuleType("pypdf")
+    fake_pypdf.PdfReader = lambda path: types.SimpleNamespace(
+        pages=[types.SimpleNamespace(extract_text=lambda: "")]
+    )
+    monkeypatch.setitem(sys.modules, "pypdf", fake_pypdf)
+
+    monkeypatch.setattr(
+        backend.shutil,
+        "which",
+        lambda cmd: "/usr/bin/pdftotext" if cmd == "pdftotext" else None,
+    )
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda cmd, **kw: SimpleNamespace(
+            returncode=0, stdout="layout text\n", stderr=""
+        ),
+    )
+
+    assert backend._read_pdf("x.pdf") == "layout text\n"
+
+
+def test_pdftotext_returns_empty_when_poppler_missing(monkeypatch, backend):
+    monkeypatch.setattr(backend.shutil, "which", lambda cmd: None)
+
+    assert backend._pdftotext_text("x.pdf") == ""

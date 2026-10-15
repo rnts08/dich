@@ -172,13 +172,21 @@ class SpeechEngine:
         # decays on every read so the meter follows speech instead of latching
         # onto the loudest moment of the session.
         self._peak = 0.0
+        # Archived raw microphone input (16 kHz mono float32) for later
+        # re-transcription or refinement. Kept separately from the transcribe
+        # buffer so saving a recording does not disturb the live pipeline.
+        self._archive_enabled = False
+        self._archive_dir: Optional[Path] = None
+        self._archive_blocks: list = []
+        self._archive_lock = threading.Lock()
+        self._last_archive_path: Optional[Path] = None
         self._final: "queue.Queue[str]" = queue.Queue()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._stream = None
 
     # -- lifecycle --------------------------------------------------------
-    def start(self):
+    def start(self, archive_dir: Optional[str] = None):
         import sounddevice as sd
 
         self._model = _whisper_model(self.model_size)
@@ -199,6 +207,12 @@ class SpeechEngine:
         for t in self._threads:
             t.start()
 
+        if archive_dir:
+            self._archive_dir = Path(archive_dir)
+            self._archive_dir.mkdir(parents=True, exist_ok=True)
+            self._archive_blocks = []
+            self._archive_enabled = True
+
     def _on_audio(self, indata, frames, time_info, status):  # noqa: ARG001
         """Append one input block; drop the oldest audio once past the ceiling."""
         with self._buffer_lock:
@@ -207,6 +221,9 @@ class SpeechEngine:
             self._buffered += len(mono)
             if mono.size:
                 self._peak = max(self._peak, float(np.abs(mono).max()))
+            if self._archive_enabled:
+                with self._archive_lock:
+                    self._archive_blocks.append(mono.copy())
             # Drop the oldest audio once past the cap. A transcriber that
             # cannot keep up would otherwise grow this without limit.
             limit = int(self.buffer_max_seconds * SAMPLE_RATE)
@@ -226,9 +243,51 @@ class SpeechEngine:
             self._stream = None
         # Flush whatever is left as a final sentence.
         self._flush_pending()
+        return self._finalize_archive()
 
     def close(self):
         self.stop()
+
+    @property
+    def archive_dir(self) -> Optional[Path]:
+        """Directory recordings are saved into, or None when archiving is off."""
+        return self._archive_dir
+
+    @property
+    def last_archive_path(self) -> Optional[Path]:
+        """Path of the most recently written archive WAV, if any."""
+        return self._last_archive_path
+
+    def _finalize_archive(self) -> Optional[Path]:
+        """
+        Write the archived microphone input as a 16-bit WAV file.
+
+        Returns the path written, or None when archiving was not enabled or
+        nothing was captured.
+        """
+        import wave
+
+        if not self._archive_enabled:
+            return None
+        self._archive_enabled = False
+        with self._archive_lock:
+            blocks = list(self._archive_blocks)
+            self._archive_blocks = []
+        if not blocks or self._archive_dir is None:
+            return None
+        audio = np.concatenate(blocks)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = self._archive_dir / f"recording-{stamp}.wav"
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            w.writeframes(
+                (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+            )
+        self._last_archive_path = path
+        logger.info(f"Archived recording to {path}")
+        return path
 
     # -- audio capture ----------------------------------------------------
     def buffer_usage(self) -> dict:
@@ -596,6 +655,7 @@ def start_mic_stream(
     device_index: Optional[int] = None,
     window_seconds: Optional[float] = None,
     buffer_max_seconds: float = BUFFER_MAX_SECONDS,
+    archive_dir: Optional[str] = None,
 ) -> SpeechEngine:
     """
     Open the microphone and begin transcribing.
@@ -608,6 +668,8 @@ def start_mic_stream(
             words appear sooner, at the cost of realtime factor. None uses the
             backend-appropriate default.
         buffer_max_seconds: Audio to hold before the oldest is dropped.
+        archive_dir: When set, raw microphone input is saved as WAV files here
+            for later re-transcription or refinement.
     """
     global _engine
     if _engine is None:
@@ -619,15 +681,26 @@ def start_mic_stream(
             ),
             buffer_max_seconds=buffer_max_seconds,
         )
-        _engine.start()
+    if getattr(_engine, "_stream", None) is None:
+        if archive_dir is not None:
+            _engine.start(archive_dir=archive_dir)
+        else:
+            _engine.start()
     return _engine
 
 
-def stop_mic_stream():
+def stop_mic_stream() -> Optional[Path]:
+    """
+    Stop the microphone stream.
+
+    Returns the path of the archived recording, if archiving was enabled.
+    """
     global _engine
     if _engine is not None:
-        _engine.stop()
+        path = _engine.stop()
         _engine = None
+        return path
+    return None
 
 
 # ---------------------------------------------------------------------------

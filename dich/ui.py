@@ -12,6 +12,7 @@ The model loads in-process (dich.backend), so there is no separate server to
 start. Run with:  python -m dich
 """
 
+import difflib
 import json
 import queue
 import re
@@ -1098,6 +1099,57 @@ class DichApp:
             "below means the transcript lags.",
             style="Faint.TLabel",
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_3))
+        row += 1
+
+        # --- microphone archive ---------------------------------------------
+        self._section(form, "Archive recordings", row)
+        row += 1
+
+        self.archive_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("archive_audio", False))
+        )
+        ttk.Checkbutton(
+            form,
+            text="Save raw microphone input while recording, so it can be "
+            "re-transcribed or refined later",
+            variable=self.archive_var,
+            command=self._on_archive_toggled,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 1
+
+        ttk.Label(form, text="Archive folder").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
+        self.archive_path_var = tk.StringVar(
+            value=str(
+                backend.CONFIG.get("audio_archive_path") or backend.audio_archive_dir()
+            )
+        )
+        self.archive_path_entry = ttk.Entry(
+            form, textvariable=self.archive_path_var, width=54
+        )
+        self.archive_path_entry.grid(row=row, column=1, sticky="w", pady=theme.SPACE_1)
+        theme.RoundedButton(
+            form,
+            "Browse…",
+            command=self._browse_archive_folder,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=row, column=2, padx=theme.SPACE_2, pady=theme.SPACE_1)
+        row += 1
+
+        self.archive_storage_label = ttk.Label(form, text="", style="Faint.TLabel")
+        self.archive_storage_label.grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_2)
+        )
+        self._refresh_archive_storage()
+        theme.RoundedButton(
+            form,
+            "Clear all saved recordings",
+            command=self.clear_audio_archive,
+            variant="danger",
+            background=theme.SURFACE0,
+        ).grid(row=row, column=0, sticky="w", pady=(0, theme.SPACE_3))
         row += 2
 
         # --- listening -------------------------------------------------------
@@ -1271,9 +1323,33 @@ class DichApp:
         ).grid(
             row=row, column=2, padx=theme.SPACE_2, pady=(theme.SPACE_1, theme.SPACE_3)
         )
-        row += 2
+        row += 1
 
-        form.rowconfigure(row - 2, weight=1)  # reference pane row expands
+        theme.RoundedButton(
+            form,
+            "Diff vs reference",
+            command=self.diff_reference,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=row, column=0, pady=theme.SPACE_1, sticky="w")
+        row += 1
+
+        self.diff_pane = TextPane(
+            form,
+            "Reference diff",
+            editable=False,
+            placeholder="Diff appears here",
+        )
+        self.diff_pane.grid(
+            row=row,
+            column=0,
+            columnspan=3,
+            sticky="nsew",
+            pady=(theme.SPACE_2, theme.SPACE_1),
+        )
+        row += 1
+
+        form.rowconfigure(row - 1, weight=1)  # diff pane row expands
 
         # --- about -----------------------------------------------------------
         self._section(form, "About", row)
@@ -1874,6 +1950,7 @@ class DichApp:
 
         path = filedialog.askopenfilename(
             title="Open an audio recording",
+            initialdir=str(backend.audio_archive_dir()),
             filetypes=[
                 ("Audio files", "*.mp3 *.wav *.m4a *.ogg *.flac *.aac"),
                 ("All files", "*.*"),
@@ -2087,6 +2164,9 @@ class DichApp:
                     "buffer_max_seconds", speech_engine.BUFFER_MAX_SECONDS
                 )
             ),
+            archive_dir=(
+                str(backend.audio_archive_dir()) if self.archive_var.get() else None
+            ),
             on_success=self._on_mic_started,
             on_error=self._on_mic_failed,
         )
@@ -2167,9 +2247,12 @@ class DichApp:
         try:
             from . import speech_engine
 
-            speech_engine.stop_mic_stream()
+            archive_path = speech_engine.stop_mic_stream()
         except ImportError:
-            pass
+            archive_path = None
+        if archive_path:
+            self._refresh_archive_storage()
+            self.status.set_hint(f"recording saved to {archive_path.name}")
 
     def clear_speech(self):
         """
@@ -2306,6 +2389,8 @@ class DichApp:
                 "push_to_talk": bool(self.push_to_talk_var.get()),
                 "combine_short_utterances": bool(self.combine_var.get()),
                 "ocr_enabled": bool(self.ocr_var.get()),
+                "archive_audio": bool(self.archive_var.get()),
+                "audio_archive_path": self.archive_path_var.get().strip(),
             }
         )
 
@@ -2320,6 +2405,7 @@ class DichApp:
         # reloads with the new choice instead of silently reusing the old one.
         backend.reload_config()
         self._refresh_models()
+        self._refresh_archive_storage()
         self.settings_status.configure(text="Saved — model reloaded", foreground=GREEN)
 
     def clear_cache(self):
@@ -2327,6 +2413,49 @@ class DichApp:
         self.cache_status.configure(text=self._cache_summary())
         self.cache_label.configure(text="")
         self.status.set_hint(f"cleared {count} cached translation(s)")
+
+    # -- microphone archive -------------------------------------------------
+    def _on_archive_toggled(self):
+        """Persist the archive toggle so recording picks it up next time."""
+        backend.CONFIG["archive_audio"] = bool(self.archive_var.get())
+
+    def _browse_archive_folder(self):
+        from tkinter import filedialog
+
+        folder = filedialog.askdirectory(
+            title="Choose where recordings are saved",
+            initialdir=self.archive_path_var.get() or str(Path.home()),
+        )
+        if folder:
+            self.archive_path_var.set(folder)
+            self._refresh_archive_storage()
+
+    def _refresh_archive_storage(self):
+        """Show how much storage archived recordings hold."""
+        try:
+            directory = backend.audio_archive_dir()
+            files = backend.archive_files(directory)
+            total = backend.archive_storage_bytes(directory)
+            if files:
+                self.archive_storage_label.configure(
+                    text=f"{len(files)} recording(s), {backend.human_bytes(total)}",
+                    foreground=FG,
+                )
+            else:
+                self.archive_storage_label.configure(
+                    text="no recordings saved yet", foreground=SUBTLE
+                )
+        except Exception:  # noqa: BLE001 - the readout is cosmetic
+            self.archive_storage_label.configure(text="", foreground=FG)
+
+    def clear_audio_archive(self):
+        """Delete every saved recording and refresh the readout."""
+        count = backend.clear_audio_archive()
+        self._refresh_archive_storage()
+        self.settings_status.configure(
+            text=f"cleared {count} saved recording(s)", foreground=GREEN
+        )
+        self.status.set_hint(f"cleared {count} saved recording(s)")
 
     def run_reference(self):
         """Debug: Google Translate reference for the current source text."""
@@ -2378,6 +2507,20 @@ class DichApp:
             )
             return
         self._show_quality(quality.score(reference, candidate))
+
+    def diff_reference(self):
+        """Debug: show a word-level diff of the translation vs the reference."""
+        reference = self.reference_pane.get()
+        candidate = self.target_pane.get()
+        if not reference or not candidate or candidate == self.target_pane.placeholder:
+            messagebox.showwarning(
+                "Nothing to diff",
+                "Run the Google reference and have a translation first.",
+            )
+            return
+        diff = difflib.ndiff(reference.splitlines(), candidate.splitlines())
+        self.diff_pane.set("\n".join(diff))
+        self.notebook.select(2)  # switch to Settings so the diff is visible
 
     # -- misc -------------------------------------------------------------
     def _show_error(self, title: str, exc: Exception, tb: str):

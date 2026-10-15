@@ -122,6 +122,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "push_to_talk": False,  # hold to talk instead of always-on listening
     "combine_short_utterances": False,  # merge short segments before translating
     "ocr_enabled": True,  # OCR image-based PDFs via tesseract when pypdf yields nothing
+    # --- microphone archive (0.2.5) -------------------------------------
+    "archive_audio": False,  # save raw mic input for later re-transcription
+    "audio_archive_path": "",  # defaults to <config>/audio when empty
 }
 
 
@@ -451,9 +454,42 @@ def estimated_ram_bytes(repo: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 
+def _pdftotext_text(file_path: str) -> str:
+    """
+    Extract a PDF's text with layout preserved via poppler's `pdftotext -layout`.
+
+    Returns empty text when poppler is not installed or produces nothing.
+    Layout-preserving extraction keeps columns and spacing closer to what the
+    page looks like, rather than pypdf's flat reading-order stream.
+    """
+    if shutil.which("pdftotext") is None:
+        return ""
+    try:
+        result = subprocess.run(
+            ["pdftotext", "-layout", file_path, "-"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            return ""
+        return result.stdout or ""
+    except (OSError, subprocess.SubprocessError):  # noqa: BLE001
+        return ""
+
+
 def _read_pdf(file_path: str) -> str:
-    """Extract text from a PDF file, falling back to OCR for image pages."""
+    """Extract text from a PDF file.
+
+    pypdf is tried first because it preserves diacritics and inline text; if it
+    yields nothing, poppler's `pdftotext -layout` is used to keep columns and
+    spacing closer to the page; otherwise OCR is the last resort for scanned
+    pages.
+    """
     text = _pypdf_text(file_path)
+    if text.strip():
+        return text
+    text = _pdftotext_text(file_path)
     if text.strip():
         return text
     # Scanned / image-only PDF: OCR is the only way to get the text out.
@@ -1283,6 +1319,64 @@ def translate_folder(
         if on_file is not None:
             on_file(path, results[-1])
     return {"folder": folder, "results": results}
+
+
+# ---------------------------------------------------------------------------
+# Microphone archive: raw input saved for later re-transcription / refinement
+# ---------------------------------------------------------------------------
+
+
+def audio_archive_dir() -> Path:
+    """
+    Where raw microphone recordings are stored.
+
+    Defaults to `<config>/audio`; the user can override it in Settings. The
+    directory is created on demand.
+    """
+    configured = str(CONFIG.get("audio_archive_path") or "").strip()
+    target = Path(configured) if configured else CONFIG_ROOT / "audio"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def archive_files(archive_dir: Optional[str | Path] = None) -> List[Path]:
+    """Archived WAV recordings, newest first."""
+    directory = Path(archive_dir) if archive_dir else audio_archive_dir()
+    if not directory.is_dir():
+        return []
+    return sorted(
+        (p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".wav"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def archive_storage_bytes(archive_dir: Optional[str | Path] = None) -> int:
+    """Total bytes held by archived recordings."""
+    directory = Path(archive_dir) if archive_dir else audio_archive_dir()
+    if not directory.is_dir():
+        return 0
+    return sum(
+        p.stat().st_size
+        for p in directory.iterdir()
+        if p.is_file() and p.suffix.lower() == ".wav"
+    )
+
+
+def clear_audio_archive(archive_dir: Optional[str | Path] = None) -> int:
+    """Delete every archived recording; returns how many were removed."""
+    directory = Path(archive_dir) if archive_dir else audio_archive_dir()
+    if not directory.is_dir():
+        return 0
+    removed = 0
+    for p in directory.iterdir():
+        if p.is_file() and p.suffix.lower() == ".wav":
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:  # noqa: BLE001 - a locked file is skipped
+                pass
+    return removed
 
 
 # ---------------------------------------------------------------------------
