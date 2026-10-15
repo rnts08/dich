@@ -14,5 +14,7 @@
   "recent_files": [],
   "idle_unload_minutes": 15,
   "glossary": {},
+  "push_to_talk": false,
+  "combine_short_utterances": false,
   "notes": "translategemma serves its own chat template in-process; Qwen3 is the fallback. mic_device_index null = system default; stt_backend 'auto' runs speech-to-text on the GPU via mlx-audio when available (large-v3-turbo: 31x realtime on the GPU) and falls back to the CPU otherwise."
 }

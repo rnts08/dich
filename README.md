@@ -121,6 +121,18 @@ against an independent translator, including the source text currently loaded.
 A native **menu bar** (File / Edit / View / Help) mirrors the toolbar buttons —
 each dispatches to the same handler, so there is one path per action.
 
+## Packaging
+
+The app runs from source with `python -m dich`. A double-clickable macOS app
+can be bundled with PyInstaller (no CI; codesigning/notarization need an Apple
+Developer account and are manual):
+
+    .venv/bin/pip install pyinstaller
+    .venv/bin/pyinstaller packaging/dich.spec
+
+See `packaging/build_app.sh` and `packaging/PACKAGING.md` for the full steps,
+first-run notes, microphone permission, and model management.
+
 ## Speech tab
 
 Two ways in:

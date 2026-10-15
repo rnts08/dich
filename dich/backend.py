@@ -116,6 +116,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "recent_files": [],  # most-recent first, capped on write
     "idle_unload_minutes": 15,  # free model RAM after this long idle; 0 = never
     "glossary": {},  # source term -> preferred translation, kept verbatim
+    # --- speech behaviour (Milestone 0.2.5) ---
+    "push_to_talk": False,  # hold to talk instead of always-on listening
+    "combine_short_utterances": False,  # merge short segments before translating
 }
 
 

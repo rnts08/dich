@@ -414,10 +414,9 @@ class StatusBar(ttk.Frame):
     """
     Footer: a progress bar plus live throughput text.
 
-    Two bar modes, because not every phase has a measurable total:
-        determinate - 0-100%, used for translation batches
-        indeterminate - a pulsing bar, used for model loading, transcribing and
-                        any other phase whose length is unknown up front
+    The bar is determinate throughout. A phase whose length is unknown shows
+    0% with a live elapsed-seconds counter rather than a bar that swishes back
+    and forth, which told the user nothing at all.
     """
 
     def __init__(self, master):
@@ -426,6 +425,12 @@ class StatusBar(ttk.Frame):
 
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=100)
         self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+
+        # Busy-phase clock state, driven by set_busy / _tick_busy.
+        self._busy_started: Optional[float] = None
+        self._busy_job = None
+        self._busy_label = ""
+        self._busy_color = FG
 
         self.stats = ttk.Label(
             self,
@@ -458,6 +463,7 @@ class StatusBar(ttk.Frame):
 
     # -- determinate -----------------------------------------------------
     def set_progress(self, percent: int):
+        self._stop_busy_clock()
         self.set_determinate()
         self.progress["value"] = max(0, min(100, percent))
 
@@ -465,15 +471,50 @@ class StatusBar(ttk.Frame):
         self.set_progress(percent)
         self.stats.configure(text=stats)
 
-    # -- indeterminate ---------------------------------------------------
+    # -- busy ------------------------------------------------------------
     def set_busy(self, label: str, hint: str = "", color: str = FG):
-        """Switch to a pulsing bar for work with no known total."""
-        if str(self.progress["mode"]) != "indeterminate":
-            self.progress.configure(mode="indeterminate")
-        self.progress.start(12)
-        self.stats.configure(text=label, foreground=color)
+        """
+        Mark a phase with no known total.
+
+        The bar stays at 0 and a live elapsed-seconds counter stands in for the
+        old swishing bar, so the user can see the phase is still running.
+        """
+        self.set_determinate()
+        self.progress["value"] = 0
+        self._busy_label = label
+        self._busy_color = color
+        self._busy_started = time.time()
+        self.stats.configure(text=f"{label} · 0s", foreground=color)
         if hint:
             self.hint.configure(text=hint)
+        self._schedule_busy_clock()
+
+    def _schedule_busy_clock(self):
+        if self._busy_job is not None:
+            try:
+                self.after_cancel(self._busy_job)
+            except Exception:  # noqa: BLE001 - a stale id must not stop the UI
+                pass
+        self._busy_job = self.after(1000, self._tick_busy)
+
+    def _tick_busy(self):
+        self._busy_job = None
+        if self._busy_started is None:
+            return
+        elapsed = int(time.time() - self._busy_started)
+        self.stats.configure(
+            text=f"{self._busy_label} · {elapsed}s", foreground=self._busy_color
+        )
+        self._schedule_busy_clock()
+
+    def _stop_busy_clock(self):
+        self._busy_started = None
+        if self._busy_job is not None:
+            try:
+                self.after_cancel(self._busy_job)
+            except Exception:  # noqa: BLE001
+                pass
+            self._busy_job = None
 
     def set_determinate(self):
         if str(self.progress["mode"]) != "determinate":
@@ -481,6 +522,7 @@ class StatusBar(ttk.Frame):
             self.progress.stop()
 
     def set_stats(self, stats: str, color: str = FG):
+        self._stop_busy_clock()
         self.stats.configure(text=stats, foreground=color)
 
     def set_hint(self, text: str):
@@ -491,6 +533,7 @@ class StatusBar(ttk.Frame):
         self.memory.configure(text=text)
 
     def reset(self):
+        self._stop_busy_clock()
         self.set_determinate()
         self.progress["value"] = 0
         self.stats.configure(text="idle")
@@ -517,6 +560,11 @@ class DichApp:
         self._memory_polling = False
         self._file_transcribing = False
         self._last_partial = ""
+        # Push-to-talk state: held while the mouse button is down, started marks
+        # a recording this button opened (so a release during the mic-open step
+        # still stops it).
+        self._ptt_held = False
+        self._ptt_started = False
         # Idle bookkeeping: models are freed once nothing has been asked of
         # them for a while, so a finished session does not hold gigabytes.
         self._last_activity = time.time()
@@ -796,7 +844,21 @@ class DichApp:
         ).pack(side="left", padx=(0, theme.SPACE_2))
         theme.RoundedButton(
             toolbar, "Clear", command=self.clear_speech, variant="ghost"
-        ).pack(side="left")
+        ).pack(side="left", padx=(0, theme.SPACE_2))
+
+        # Push-to-talk: hold for a burst, release to transcribe. A plain ttk
+        # button keeps the press/release events simple.
+        self.ptt_button = ttk.Button(toolbar, text="Hold to Talk")
+        self.ptt_button.pack(side="left", padx=(0, theme.SPACE_3))
+        self.ptt_button.bind("<ButtonPress-1>", lambda _e: self._ptt_press())
+        self.ptt_button.bind("<ButtonRelease-1>", lambda _e: self._ptt_release())
+
+        # Input-level meter: fills toward full scale, with the silence floor
+        # marked, so "it heard nothing" is visible rather than a mystery.
+        self.mic_level = ttk.Progressbar(
+            toolbar, mode="determinate", maximum=100, length=140
+        )
+        self.mic_level.pack(side="left", padx=(0, theme.SPACE_2))
 
         self.mic_status = ttk.Label(toolbar, text="idle", style="Faint.TLabel")
         self.mic_status.pack(side="left", padx=theme.SPACE_4)
@@ -962,16 +1024,36 @@ class DichApp:
             backend.CONFIG.get("mic_model", speech_engine.default_live_model())
         )
 
+        self.push_to_talk_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("push_to_talk", False))
+        )
+        ttk.Checkbutton(
+            form,
+            text="Hold to Talk instead of always-on listening (mouse button on "
+            "the Speech tab)",
+            variable=self.push_to_talk_var,
+        ).grid(row=14, column=0, columnspan=3, sticky="w", pady=4)
+
+        self.combine_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("combine_short_utterances", False))
+        )
+        ttk.Checkbutton(
+            form,
+            text="Combine consecutive short utterances before translating "
+            "(fewer, less fragmented lines)",
+            variable=self.combine_var,
+        ).grid(row=15, column=0, columnspan=3, sticky="w", pady=4)
+
         ttk.Label(
             form,
             text="Only runs while recording. Realtime figures measured for "
             "Vietnamese on an Apple M5; above 1× keeps up with a speaker, "
             "below means the transcript lags.",
             style="Faint.TLabel",
-        ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
         ttk.Label(form, text="Refine every (utterances)").grid(
-            row=15, column=0, sticky="w", pady=6
+            row=17, column=0, sticky="w", pady=6
         )
         self.refine_var = tk.IntVar(value=int(backend.CONFIG.get("refine_every", 6)))
         ttk.Spinbox(
@@ -981,7 +1063,7 @@ class DichApp:
             textvariable=self.refine_var,
             width=6,
             command=self._on_refine_every_changed,
-        ).grid(row=15, column=1, sticky="w", pady=6)
+        ).grid(row=17, column=1, sticky="w", pady=6)
 
         ttk.Label(
             form,
@@ -1301,6 +1383,7 @@ class DichApp:
                 self.status.set_memory(bar_line)
                 if self.recording:
                     self.mic_status.configure(text=mic_line, foreground=mic_colour)
+                    self._show_mic_level(usage.get("peak", 0.0))
         except Exception:  # noqa: BLE001 - a readout must not kill its subject
             traceback.print_exc()
         finally:
@@ -1890,6 +1973,29 @@ class DichApp:
             on_error=self._on_mic_failed,
         )
 
+    def _ptt_press(self):
+        self._ptt_held = True
+        if not self.recording and not self._mic_opening:
+            self._ptt_started = True
+            self.start_recording()
+
+    def _ptt_release(self):
+        self._ptt_held = False
+        if self.recording:
+            self.stop_recording()
+
+    def _show_mic_level(self, peak: float):
+        """
+        Render the input level.
+
+        Speech peaks well under full scale, so the bar is scaled to 0.5 peak:
+        a normal speaking voice fills it, and near-zero is visibly silence.
+        """
+        try:
+            self.mic_level["value"] = min(100.0, max(0.0, peak) / 0.5 * 100.0)
+        except (TypeError, ValueError):
+            self.mic_level["value"] = 0.0
+
     def _on_mic_started(self, engine):
         self.root.config(cursor="")
         self._mic_opening = False
@@ -1901,10 +2007,15 @@ class DichApp:
         self._new_translator()
         threading.Thread(target=self._render_speech, daemon=True).start()
         self._start_memory_poll()
+        # Push-to-talk released while the stream was still opening: honour it.
+        if self._ptt_started and not self._ptt_held:
+            self._ptt_started = False
+            self.stop_recording()
 
     def _on_mic_failed(self, exc: Exception, tb: str):
         self.root.config(cursor="")
         self._mic_opening = False
+        self._ptt_started = False
         self.mic_button.configure(state="normal")
         self.mic_status.configure(text="failed to open")
         self.status.set_stats("microphone unavailable", RED)
@@ -1922,8 +2033,13 @@ class DichApp:
         if not self.recording:
             return
         self.recording = False
+        self._ptt_started = False
         self.mic_button.configure(text="●  Record")
         self.mic_status.configure(text="stopped")
+        try:
+            self.mic_level["value"] = 0
+        except Exception:  # noqa: BLE001 - the meter is cosmetic
+            pass
         self._stop_memory_poll()
         self.status.reset()
         # The partial line belongs to the recording; drop it so a stale
@@ -2069,6 +2185,8 @@ class DichApp:
                 "refine_every": int(self.refine_var.get()),
                 "window_seconds": float(self.window_var.get()),
                 "buffer_max_seconds": int(self.buffer_var.get()),
+                "push_to_talk": bool(self.push_to_talk_var.get()),
+                "combine_short_utterances": bool(self.combine_var.get()),
             }
         )
 
