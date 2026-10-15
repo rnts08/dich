@@ -514,6 +514,7 @@ class DichApp:
         self.audio_path: Path | None = None
         self._mic_opening = False
         self._memory_polling = False
+        self._file_transcribing = False
 
         self._build_style()
         self._build_menu()
@@ -1100,7 +1101,12 @@ class DichApp:
         if not self._memory_polling:
             return
         try:
-            if speech_engine is not None:
+            if getattr(self, "_file_transcribing", False):
+                # No capture buffer exists in file mode; buffer_usage() is the
+                # idle zero dict there, and a steady "buffer 0 B · 0.0s" reads
+                # as a stalled pipeline. The phase label is the real readout.
+                self.status.set_memory("file mode · no capture buffer")
+            elif speech_engine is not None:
                 usage = speech_engine.buffer_usage()
                 behind = usage.get("behind_by", 0.0)
                 dropped = usage.get("dropped_seconds", 0.0)
@@ -1369,6 +1375,7 @@ class DichApp:
             self.stop_recording()
 
         self.audio_path = Path(path)
+        self._file_transcribing = True
         self.mic_status.configure(text="transcribing…")
         self.status.set_busy(
             "transcribing audio",
@@ -1408,6 +1415,7 @@ class DichApp:
         self.mic_status.configure(text=label)
 
     def _on_audio_transcribed(self, result):
+        self._file_transcribing = False  # the file job's phases are over
         count = len(result.sentences)
         if not count:
             # Silence is left untranslated on purpose, so "0 sentences" is a

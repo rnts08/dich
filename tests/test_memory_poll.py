@@ -23,6 +23,49 @@ def test_idle_usage_matches_live_schema(monkeypatch):
     assert set(idle) == live_keys
 
 
+def test_poll_memory_during_file_mode_does_not_show_a_fake_zero_buffer():
+    """
+    A file job has no capture buffer, so buffer_usage() is the idle zero dict.
+    Rendering it read "buffer 0 B · 0.0s" for the whole transcription — the
+    report that the readout shows nothing while a file is being read.
+    """
+    events = []
+    app = SimpleNamespace(
+        _memory_polling=True,
+        _file_transcribing=True,
+        recording=False,
+        status=SimpleNamespace(set_memory=lambda text: events.append(("memory", text))),
+        mic_status=SimpleNamespace(configure=lambda **kw: events.append(("mic", kw))),
+        root=SimpleNamespace(after=lambda delay, fn: events.append(("after", delay))),
+    )
+    app._poll_memory = ui.DichApp._poll_memory
+
+    ui.DichApp._poll_memory(app)
+
+    line = next(e[1] for e in events if e[0] == "memory")
+    assert line.startswith("file mode")
+    assert ("after", 500) in events  # still polling, still alive
+
+
+def test_poll_memory_ignores_file_mode_when_idle():
+    """The file-mode branch must not follow us out of a transcription."""
+    events = []
+    app = SimpleNamespace(
+        _memory_polling=True,
+        _file_transcribing=False,
+        recording=False,
+        status=SimpleNamespace(set_memory=lambda text: events.append(("memory", text))),
+        mic_status=SimpleNamespace(configure=lambda **kw: None),
+        root=SimpleNamespace(after=lambda delay, fn: events.append(("after", delay))),
+    )
+    app._poll_memory = ui.DichApp._poll_memory
+
+    ui.DichApp._poll_memory(app)
+
+    line = next(e[1] for e in events if e[0] == "memory")
+    assert line.startswith("buffer")
+
+
 def test_poll_memory_first_tick_survives_idle_engine():
     """
     open_audio() calls _start_memory_poll() before dispatching the file job,
