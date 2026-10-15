@@ -366,6 +366,42 @@ def human_bytes(num: float) -> str:
     return f"{num:.1f} PB"
 
 
+def memory_pressure() -> Optional[float]:
+    """
+    Return system memory pressure as a 0..1 fraction, or None when unreadable.
+
+    On Apple Silicon there is no separate VRAM: the GPU shares unified memory,
+    so low free RAM is the signal that we should unload resident models.
+    Parses `vm_stat`, which is always available on macOS.
+    """
+    try:
+        result = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return None
+        pages: Dict[str, int] = {}
+        for line in result.stdout.splitlines():
+            parts = line.split(":")
+            if len(parts) == 2:
+                key = parts[0].strip().replace(" ", "_").lower()
+                value = parts[1].strip().rstrip(".")
+                if value.isdigit():
+                    pages[key] = int(value)
+        if not pages:
+            return None
+        total = sum(pages.values())
+        if total == 0:
+            return None
+        # "pages free" plus "pages speculative" are immediately reusable.
+        available = pages.get("pages_free", 0) + pages.get("pages_speculative", 0)
+        return 1.0 - (available / total)
+    except (OSError, subprocess.SubprocessError, ValueError):  # noqa: BLE001
+        return None
+
+
+#: Pressure above which idle models are unloaded to free unified memory (VRAM).
+MEMORY_PRESSURE_THRESHOLD = 0.85
+
+
 def _dir_size(path: Path) -> int:
     total = 0
     for child in path.rglob("*"):
@@ -675,17 +711,23 @@ def extract_text_from_file(file_path: str) -> str:
     return extractor(file_path)
 
 
-def export_text(text: str, path: str) -> str:
+def export_text(text: str, path: str, source_path: Optional[str] = None) -> str:
     """
     Write a translation to `path`, keeping the source format where possible.
 
-    A `.docx` in should be a `.docx` out: headings and paragraphs are rebuilt as
-    real Word paragraphs rather than a flat text dump. Formats that cannot be
-    re-emitted faithfully (PDF) fall back to plain UTF-8 text, which is why the
-    suffix is honoured rather than assumed.
+    A `.docx` in should be a `.docx` out: when the source file is available the
+    structure (paragraphs, headings, lists and tables) is preserved block by
+    block rather than flattened. Formats that cannot be re-emitted faithfully
+    (PDF) fall back to plain UTF-8 text, which is why the suffix is honoured
+    rather than assumed.
     """
     target = Path(path)
     suffix = target.suffix.lower()
+
+    if suffix in (".docx", ".docm") and source_path:
+        source_suffix = Path(source_path).suffix.lower()
+        if source_suffix in (".docx", ".docm"):
+            return _export_docx_structured(source_path, str(target))
 
     if suffix in (".docx", ".docm"):
         import docx
@@ -710,6 +752,62 @@ def export_text(text: str, path: str) -> str:
 
     target.write_text(text, encoding="utf-8")
     return str(target)
+
+
+def _export_docx_structured(source_path: str, target_path: str) -> str:
+    """
+    Translate a .docx/.docm preserving paragraphs, headings, lists and tables.
+
+    Each paragraph and table cell is translated in place, so the output keeps
+    the same block order, table dimensions and paragraph styles as the source.
+    """
+    import docx
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    source = docx.Document(source_path)
+    target = docx.Document()
+
+    def paragraph_style(paragraph: Paragraph) -> str:
+        try:
+            return paragraph.style.name
+        except Exception:  # noqa: BLE001 - style may be unset
+            return "Normal"
+
+    def apply_style(new_paragraph, name: str) -> None:
+        try:
+            new_paragraph.style = name
+        except (KeyError, ValueError):  # style not in target template
+            pass
+
+    for element in source.element.body.iterchildren():
+        if isinstance(element, CT_P):
+            paragraph = Paragraph(element, source)
+            if not paragraph.text.strip():
+                target.add_paragraph("")
+                continue
+            translated = translate_text(paragraph.text).text
+            new_paragraph = target.add_paragraph(translated)
+            apply_style(new_paragraph, paragraph_style(paragraph))
+        elif isinstance(element, CT_Tbl):
+            table = Table(element, source)
+            rows = len(table.rows)
+            cols = len(table.columns)
+            new_table = target.add_table(rows=rows, cols=cols)
+            try:
+                new_table.style = table.style.name or "Table Grid"
+            except (KeyError, ValueError):
+                new_table.style = "Table Grid"
+            for r_i, row in enumerate(table.rows):
+                for c_i, cell in enumerate(row.cells):
+                    new_cell = new_table.cell(r_i, c_i)
+                    if cell.text.strip():
+                        new_cell.text = translate_text(cell.text).text
+
+    target.save(target_path)
+    return str(target_path)
 
 
 # ---------------------------------------------------------------------------

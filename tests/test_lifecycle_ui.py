@@ -31,6 +31,7 @@ def _idle_app(monkeypatch, backend, idle_for, **flags):
     monkeypatch.setattr(
         backend, "unload_models", lambda: unloaded.append(True) or ["a/model"]
     )
+    monkeypatch.setattr(backend, "memory_pressure", lambda: 0.1)
     monkeypatch.setitem(backend.CONFIG, "idle_unload_minutes", flags.get("minutes", 15))
     app = SimpleNamespace(
         recording=flags.get("recording", False),
@@ -38,6 +39,7 @@ def _idle_app(monkeypatch, backend, idle_for, **flags):
         _last_activity=time.time() - idle_for,
         _idle_unloaded=False,
         _idle_tick=lambda: None,
+        _pressure_unloaded=False,
         root=SimpleNamespace(after=lambda ms, fn: scheduled.append(ms)),
         status=SimpleNamespace(set_hint=hints.append),
     )
@@ -182,7 +184,10 @@ def test_save_translation_exports_in_the_source_format(monkeypatch, backend, tmp
     monkeypatch.setattr(
         backend,
         "export_text",
-        lambda text, path: exported.update({"text": text, "path": path}) or path,
+        lambda text, path, source_path=None: (
+            exported.update({"text": text, "path": path, "source_path": source_path})
+            or path
+        ),
     )
     monkeypatch.setattr(
         ui.filedialog,

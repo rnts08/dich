@@ -570,6 +570,7 @@ class DichApp:
         # them for a while, so a finished session does not hold gigabytes.
         self._last_activity = time.time()
         self._idle_unloaded = False
+        self._pressure_unloaded = False
 
         self._build_style()
         self._build_menu()
@@ -594,32 +595,48 @@ class DichApp:
         """Reset the idle clock; call whenever work is requested."""
         self._last_activity = time.time()
         self._idle_unloaded = False
+        self._pressure_unloaded = False
 
     def _idle_tick(self):
         """
-        Free model RAM after a stretch with nothing to do.
+        Free model RAM after a stretch with nothing to do, or when the system
+        is short on unified memory (VRAM on Apple Silicon).
 
         Both the translation and the speech engines hold gigabytes, and a
         finished session should not keep them. The clock resets on every
-        request, so a model in active use is never dropped.
+        request, so a model in active use is never dropped. Memory pressure is
+        checked independently: when RAM is scarce the models are unloaded even
+        mid-idle so other apps can use the memory.
         """
         try:
             minutes = float(backend.CONFIG.get("idle_unload_minutes", 15) or 0)
         except (TypeError, ValueError):
             minutes = 15
         idle_for = time.time() - self._last_activity
+        pressure = backend.memory_pressure()
+        pressure_high = (
+            pressure is not None and pressure > backend.MEMORY_PRESSURE_THRESHOLD
+        )
+        pressure_cleared = pressure is not None and pressure < 0.75
+        if pressure_cleared:
+            self._pressure_unloaded = False
         if (
-            minutes > 0
-            and not self._idle_unloaded
-            and not self.recording
+            not self.recording
             and not self._file_transcribing
-            and idle_for > minutes * 60
+            and (
+                (minutes > 0 and not self._idle_unloaded and idle_for > minutes * 60)
+                or (pressure_high and not self._pressure_unloaded)
+            )
         ):
             names = backend.unload_models()
-            self._idle_unloaded = True
+            if minutes > 0 and not self._idle_unloaded and idle_for > minutes * 60:
+                self._idle_unloaded = True
+            if pressure_high:
+                self._pressure_unloaded = True
             if names:
+                reason = "memory pressure" if pressure_high else "idle"
                 self.status.set_hint(
-                    f"unloaded {len(names)} idle model(s) — they reload on next use"
+                    f"unloaded {len(names)} {reason} model(s) — they reload on next use"
                 )
         self.root.after(60_000, self._idle_tick)
 
@@ -1924,7 +1941,10 @@ class DichApp:
         if not path:
             return
         try:
-            backend.export_text(translation, path)
+            # When the source was a Word file and the target is too, preserve
+            # structure (tables, lists, headings) block by block.
+            source_path = str(self.current_file) if self.current_file else None
+            backend.export_text(translation, path, source_path=source_path)
         except Exception as exc:  # noqa: BLE001 - a save must not crash the app
             self._show_error(
                 "Could not save the translation", exc, traceback.format_exc()

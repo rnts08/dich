@@ -6,6 +6,10 @@ text, so a typo silently started a multi-gigabyte download with no size shown
 and nothing indicating the model was new.
 """
 
+from types import SimpleNamespace
+
+import pytest
+
 
 def _make_cached(models_dir, repo, megabytes=1):
     snap = models_dir / f"models--{repo.replace('/', '--')}" / "snapshots" / "abc123"
@@ -127,3 +131,37 @@ def test_unload_models_never_raises_when_an_engine_resists(monkeypatch, backend)
     monkeypatch.setattr(backend, "_ENGINES", {"angry/model": Angry()})
 
     assert backend.unload_models() == ["angry/model"]  # no exception
+
+
+def test_memory_pressure_parses_vm_stat(monkeypatch, backend):
+    output = (
+        "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n"
+        "Pages free:                                 1000.\n"
+        "Pages active:                               4000.\n"
+        "Pages inactive:                             3000.\n"
+        "Pages speculative:                           500.\n"
+        "Pages throttled:                               0.\n"
+        "Pages wired down:                            500.\n"
+    )
+
+    def fake_run(cmd, **kw):
+        assert cmd == ["vm_stat"]
+        return SimpleNamespace(stdout=output, returncode=0)
+
+    monkeypatch.setattr(backend.subprocess, "run", fake_run)
+
+    # free + speculative = 1500; total = 9000; pressure = 1 - 1500/9000 = 0.8333
+    assert backend.memory_pressure() == pytest.approx(0.8333, abs=1e-4)
+
+
+def test_memory_pressure_none_when_vm_stat_fails(monkeypatch, backend):
+    monkeypatch.setattr(
+        backend.subprocess,
+        "run",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("no vm_stat")),
+    )
+    assert backend.memory_pressure() is None
+
+
+def test_memory_pressure_threshold_constant(backend):
+    assert 0.0 < backend.MEMORY_PRESSURE_THRESHOLD < 1.0

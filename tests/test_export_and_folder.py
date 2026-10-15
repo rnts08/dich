@@ -95,3 +95,40 @@ def test_translate_folder_keeps_going_after_a_failure(tmp_path, monkeypatch, bac
     assert by_file["bad.txt"]["ok"] is False
     assert by_file["good.txt"]["ok"] is True
     assert (tmp_path / "good.en.txt").exists()
+
+
+def test_export_docx_preserves_tables_and_headings(tmp_path, monkeypatch, backend):
+    import docx
+
+    calls = []
+
+    def fake_translate(text, model=None, on_progress=None):
+        calls.append(text)
+        return SimpleNamespace(text=f"TR:{text}")
+
+    monkeypatch.setattr(backend, "translate_text", fake_translate)
+
+    source = tmp_path / "source.docx"
+    document = docx.Document()
+    document.add_heading("Tổng quan", level=1)
+    document.add_paragraph("Nội dung chính.")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Tên"
+    table.cell(0, 1).text = "Giá"
+    table.cell(1, 0).text = "Bánh mì"
+    table.cell(1, 1).text = "15.000"
+    document.save(source)
+
+    target = tmp_path / "target.docx"
+    backend._export_docx_structured(str(source), str(target))
+
+    # Headings, paragraphs and table cells were translated, structure kept.
+    loaded = docx.Document(target)
+    assert any(p.text == "TR:Tổng quan" for p in loaded.paragraphs)
+    assert any(p.text == "TR:Nội dung chính." for p in loaded.paragraphs)
+    assert len(loaded.tables) == 1
+    assert len(loaded.tables[0].rows) == 2
+    assert len(loaded.tables[0].columns) == 2
+    assert loaded.tables[0].cell(0, 0).text == "TR:Tên"
+    assert loaded.tables[0].cell(1, 1).text == "TR:15.000"
+    assert len(calls) == 6  # 1 heading + 1 paragraph + 4 cells
