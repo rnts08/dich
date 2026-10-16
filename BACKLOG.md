@@ -6,6 +6,14 @@ This is the working list of what is left, ordered by priority rather than by
 milestone. `ROADMAP.md` keeps the longer-horizon shape; this file is what to pick
 up next.
 
+The app is strictly **Vietnamese → English**. Anything about other languages,
+speech models per language, or multi-language support has been removed — it will
+not be built.
+
+Packaging and distribution (macOS `.app`, codesign, notarize, `.dmg`, bundled
+weights with download progress) are in the **deferred queue** at the end — not
+being worked on until much later.
+
 Priority key — **P0** blocks a release, **P1** needed for a usable stand-alone
 app, **P2** real improvement, **P3** nice to have.
 
@@ -17,20 +25,22 @@ Working today, verified against the code rather than assumed:
 
 - **Text translation** — PDF, DOCX, DOCM, DOC, RTF, Markdown, plain text →
   English, batched for long documents, cached so unchanged input is instant.
+  DOCX structure (headings, tables, lists) is preserved block by block on save.
+  PDFs use `pdftotext -layout` when pypdf yields nothing, then OCR as a last resort.
 - **Speech** — mic or audio file → Vietnamese transcript → translation, with a
   partial transcript shown while the speaker is still talking, and translations
   that improve as context accumulates. Runs on the GPU via `mlx-audio`
   (`large-v3-turbo`, 31× realtime), CPU `faster-whisper` as fallback.
+  Decibel meter, flat progress bar, push-to-talk, mic archive (raw WAV saved for
+  re-transcription), idle + VRAM-pressure model unload.
 - **Config and models** under `~/.config/dich`, loading offline. No server
-  process to run.
+  process to run. Model picker lists what is cached with size/RAM estimates.
 - **Menu bar, design tokens, rounded controls, markdown rendering, buffer-memory
   readout, licence and About.**
-- **Tests** — a 132-case suite (unit + golden-file quality gate) under `tests/`,
+- **Tests** — a 200+-case suite (unit + golden-file quality gate) under `tests/`,
   run locally by the pre-commit hook (CI is deliberately off; see below).
 
-Not working, or not present: **no packaging**, **no token-by-token streaming of
-the *translation***, and the microphone has never been confirmed working with a
-human speaker — only with recorded audio played through speakers.
+Not working, or not present: **no token-by-token streaming of the *translation***, and the microphone has never been confirmed working with a human speaker — only with recorded audio played through speakers.
 
 ---
 
@@ -47,20 +57,6 @@ purpose (see the notes at the end).
 
 ## P1 — needed for a stand-alone app
 
-### Packaging
-- [ ] Build a macOS `.app` (pyinstaller or briefcase) so it double-clicks
-- [ ] Model weights bundled, or downloaded on first run with visible progress
-- [ ] App icon and Finder metadata
-- [ ] Codesign + notarize, so it opens without a Gatekeeper complaint
-- [ ] `.dmg` optional
-
-### Model management
-- [ ] Model picker listing what is **already cached**, not free-text entry — at
-  present it is easy to type a name that then downloads 8 GB
-- [ ] Show model size and estimated RAM before switching
-- [ ] Download progress for a model that is not cached yet
-- [ ] Unload the model when idle, to free RAM
-
 ### Confirm the microphone end to end
 The only untested path with a real person. Recorded audio fed through speakers
 works; a human speaking has never been confirmed.
@@ -72,68 +68,63 @@ speech through the live window path still transcribes down to about −40 dB
 multi-speaker dictation file all produced text, so varied voices transcribe
 from a file. The failure is therefore at the live mic or its environment, not
 in the filters — it cannot be reproduced without a person at a microphone.
+
 - [ ] Listen with a Vietnamese speaker and record what actually comes out
 - [ ] Check the input device and System Settings → Microphone permission first
 - [ ] If accuracy is the problem, act on it; if latency is, tune the window
 
 ### Install guide
-- [ ] A reproducible, written setup from a clean machine
+- [ ] A reproducible, written setup from a clean machine (`PACKAGING.md` covers
+  the app bundle; this is about getting `python -m dich` running from scratch)
 
 ---
 
-## P2 — real improvements
+## Remaining work — prioritized list
 
-### Speech quality
-- [x] **Move transcription onto the GPU** (0.2.36–0.2.40). The blocker was the
-  repo layout, not mlx-audio: `mlx-community/whisper-large-v3-turbo` ships
-  weights only, so `get_tokenizer()` raised `Processor not found`. Model ids now
-  map to the `-asr-fp16` repos, which carry the full processor. `mlx-audio`
-  runs Whisper and Qwen3-ASR; `faster-whisper` remains the CPU fallback, chosen
-  by `stt_backend` (`auto` prefers the GPU). Measured on an M5: turbo 31×
-  realtime, Qwen3-ASR 0.6B 30×, both far ahead of the CPU.
-- [x] Live partial transcript while the user is still speaking (0.2.40) — the
-  engine's pending sentence is shown on the status line and updates per window.
-- [x] GPU-appropriate live defaults (0.2.40): 5 s window and `large-v3-turbo` on
-  the GPU, 2 s and `small` on the CPU. Trade-off worth knowing: a 5 s window
-  means the first *sentence* lands later than the old 1.2 s, but the partial
-  line fills sooner and accuracy on unfamiliar voices is markedly better.
-- [ ] Streaming *translated* output token by token — the engine can already
-  produce it; the UI does not use it yet (partials above are the transcript,
-  not the translation)
-- [ ] Push-to-talk as an alternative to always-on listening
-- [ ] Re-scan the retained buffer for an alternative transcript, as originally
-  intended
-- [ ] Tune silence threshold and minimum sentence length against real speech
-  (the floor survived a −40 dB level sweep; the marker list still drops genuine
-  "cảm ơn các bạn" — decide whether that trade is right)
+Everything below is partially done or not done at all, in priority order.
 
-### Text translation
-- [ ] Preserve PDF layout instead of extracting a flat text stream
-- [ ] Preserve headings, tables and lists in DOCX output rather than plain text
-- [ ] Side-by-side aligned view: source paragraph ↔ translated paragraph
-- [ ] Diff view against the Google Translate reference
-- [ ] Export in the same format it was read from (translate a `.docx`, get a
-  `.docx`)
-- [ ] Batch-translate a whole folder
-- [ ] Clipboard translation / translate selected text
+1. **Confirm the microphone with a real Vietnamese speaker** (P1) — blocked
+   until a person is at the mic with System Settings → Microphone permission
+   granted. Cannot be reproduced from recorded audio.
 
-### App lifecycle
-- [ ] Remember window size and position between runs
-- [ ] Resume the last document on launch
-- [ ] Recent files list
-- [ ] Proper quit handling for in-flight requests
+2. **Streaming translated output token by token** (P2) — the engine produces
+   translations incrementally; the UI does not consume or display them yet.
+
+3. **Resume the last document on launch** (P2) — window geometry is remembered;
+   reopening the last file on startup is not.
+
+4. **Tune silence threshold and minimum sentence length against real speech**
+   (P2) — `SILENCE_FLOOR` survived a −40 dB level sweep, but the values have
+   not been tuned against live human speech; the marker list still drops genuine
+   "cảm ơn các bạn" — decide whether that trade is right.
+
+5. **Re-scan the retained buffer for an alternative transcript** (P2) — as
+   originally intended, give the user a second pass over buffered audio.
+
+6. **Side-by-side aligned view** (P2) — source paragraph ↔ translated paragraph
+   side by side, rather than top/bottom panes.
+
+7. **Combine consecutive short utterances into one model call** (P3) — the
+   setting exists; the combining logic itself is not implemented.
+
+8. **OCR for embedded diagrams and images inside PDFs** (P3) — scanned-page OCR
+   is done; images embedded within a text PDF are not OCR'd.
+
+9. **Perfect PDF layout** (P3) — `pdftotext -layout` is a fallback; true layout
+   fidelity (columns, side-by-side text, reading order) is not.
 
 ---
 
-## P3 — later
+## Deferred queue — packaging & distribution (not now)
 
-- [ ] Languages beyond Vietnamese → English. The config is already shaped for
-  it; the prompt and STT are hard-coded to Vietnamese.
-- [ ] Quality scoring against the Google reference, so weak translations are
-  flagged
-- [ ] OCR for diagrams and images inside PDFs
-- [ ] Glossary so proper nouns stay consistent
-- [ ] Combine consecutive short utterances into one model call, to cut overhead
+These are intentionally parked until much later. None are being worked on.
+
+- Build a macOS `.app` (pyinstaller or briefcase) so it double-clicks — spec
+  exists in `packaging/dich.spec`, untested (PyInstaller not installed here)
+- Model weights bundled, or downloaded on first run with visible progress
+- App icon and Finder metadata
+- Codesign + notarize, so it opens without a Gatekeeper complaint
+- `.dmg` optional
 
 ---
 
