@@ -22,7 +22,13 @@ must agree that a window looks like a voice:
 
 An adaptive noise floor adds the fourth condition: a window must also be louder
 than the room's own background, which is learned from windows that are *not*
-speech, so a quiet utterance after loud noise is still heard.
+speech, so a quiet utterance after loud noise is still heard. The floor is
+measured on the voice band rather than the whole signal, so a low rumble two
+octaves below speech cannot raise the bar a quiet voice has to clear.
+
+The engine runs a speech-band front-end (``audio_filter``) ahead of this gate, so
+by the time a window arrives here most out-of-band noise — hum, rumble, top-end
+hiss — is already gone and the voice-band share is a cleaner signal.
 
 The gate is deliberately permissive. A false negative (dropping real speech) is
 worse than a false positive (transcribing a noisy window), so the thresholds lean
@@ -59,6 +65,11 @@ NOISE_FLOOR_ADAPT_DOWN = 0.2
 NOISE_FLOOR_ADAPT_UP = 0.02
 # Where the learned floor starts, before any non-speech window has been seen.
 NOISE_FLOOR_INIT = 0.003
+# An absolute voice-band RMS below which a window is never speech, whatever its
+# shape. It sits under the quietest usable utterance (a level sweep transcribed
+# Vietnamese down to about 0.002 RMS) and only rejects a near-inaudible tone the
+# model could otherwise read words into.
+VOICE_ABS_MIN = 0.001
 # Windows shorter than this cannot carry a stable spectrum.
 MIN_WINDOW_SECONDS = 0.05
 
@@ -140,21 +151,25 @@ class VoiceGate:
         if samples.size < int(MIN_WINDOW_SECONDS * self.sample_rate):
             return False
 
-        level = self.rms(samples)
-        if level <= 0.0:
-            self._adapt(level, speech=False)
+        full = self.rms(samples)
+        if full <= 0.0:
+            self._adapt(0.0, speech=False)
             return False
 
         band = voice_band_ratio(samples, self.sample_rate)
         flat = spectral_flatness(samples)
         zcr = zero_crossing_rate(samples)
+        # The floor is measured on the *voice band* alone (Parseval: full RMS
+        # scaled by the square root of the band's share), so a rumble two
+        # octaves below speech cannot raise the bar a quiet voice has to clear.
+        level = full * float(np.sqrt(max(0.0, band)))
 
         shaped = (
             band >= VOICE_BAND_MIN_RATIO
             and flat <= MAX_SPECTRAL_FLATNESS
             and ZCR_MIN <= zcr <= ZCR_MAX
         )
-        loud = level >= self.noise_floor * NOISE_FLOOR_MARGIN
+        loud = level >= max(self.noise_floor * NOISE_FLOOR_MARGIN, VOICE_ABS_MIN)
 
         speech = bool(shaped and loud)
         self._adapt(level, speech)

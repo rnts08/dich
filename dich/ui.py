@@ -1185,6 +1185,17 @@ class DichApp:
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
         row += 1
 
+        self.band_filter_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("speech_band_filter", True))
+        )
+        ttk.Checkbutton(
+            form,
+            text="Speech-band filter: keep only the frequencies a voice uses "
+            "(~80 Hz–8 kHz), so hum, rumble and hiss are removed before the model",
+            variable=self.band_filter_var,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 1
+
         self.combine_var = tk.BooleanVar(
             value=bool(backend.CONFIG.get("combine_short_utterances", False))
         )
@@ -2587,6 +2598,7 @@ class DichApp:
                 str(backend.audio_archive_dir()) if self.archive_var.get() else None
             ),
             voice_only_filter=bool(self.voice_only_var.get()),
+            speech_band_filter=bool(self.band_filter_var.get()),
             on_success=self._on_mic_started,
             on_error=self._on_mic_failed,
         )
@@ -2852,6 +2864,7 @@ class DichApp:
                 "buffer_max_seconds": int(self.buffer_var.get()),
                 "push_to_talk": bool(self.push_to_talk_var.get()),
                 "voice_only_filter": bool(self.voice_only_var.get()),
+                "speech_band_filter": bool(self.band_filter_var.get()),
                 "combine_short_utterances": bool(self.combine_var.get()),
                 "ocr_enabled": bool(self.ocr_var.get()),
                 "archive_audio": bool(self.archive_var.get()),

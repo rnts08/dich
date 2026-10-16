@@ -34,6 +34,7 @@ from typing import Callable, Iterator, List, Optional
 
 import numpy as np
 
+from .audio_filter import band_pass
 from .voice_filter import VoiceGate
 
 # faster-whisper downloads through huggingface_hub, which reads these once at
@@ -157,6 +158,7 @@ class SpeechEngine:
         window_seconds: float = WINDOW_SECONDS,
         buffer_max_seconds: float = BUFFER_MAX_SECONDS,
         voice_only_filter: bool = True,
+        speech_band_filter: bool = True,
     ):
         self.model_size = model_size
         self.device_index = device_index
@@ -167,6 +169,9 @@ class SpeechEngine:
         # through.
         self.voice_only_filter = bool(voice_only_filter)
         self._voice_gate = VoiceGate() if self.voice_only_filter else None
+        # The speech-band front-end keeps only the frequencies a voice uses, so
+        # mains hum, rumble and top-end hiss never reach the gate or the model.
+        self.speech_band_filter = bool(speech_band_filter)
         self._quiet_windows = 0
         # The cap stops a transcriber that cannot keep up from growing the
         # buffer without limit, while leaving enough audio to catch up after a
@@ -387,6 +392,10 @@ class SpeechEngine:
             and the same phrase repeats for the rest of the session.
           * initial_prompt - a Vietnamese hint is echoed back verbatim by the
             decoder on silence, so it does more harm than good here.
+
+        Two front-ends run ahead of the model: a speech-band filter that removes
+        the frequencies a voice does not use, then the voice gate. Both exist so
+        that noise cannot become text.
         """
         import numpy as np
 
@@ -398,6 +407,10 @@ class SpeechEngine:
             # window also ends whatever utterance was hanging.
             self._quiet_window()
             return
+        if self.speech_band_filter:
+            # Keep only the voice band, so hum, rumble and hiss are gone before
+            # the gate judges the window and before the model reads it.
+            samples = band_pass(samples, SAMPLE_RATE)
         if self._voice_gate is not None and not self._voice_gate.is_voice(samples):
             # A fan, a keyboard, a TV, room tone — not a voice. Handing any of
             # these to the model is exactly how noise turns into hallucinated
@@ -743,6 +756,7 @@ def start_mic_stream(
     buffer_max_seconds: float = BUFFER_MAX_SECONDS,
     archive_dir: Optional[str] = None,
     voice_only_filter: bool = True,
+    speech_band_filter: bool = True,
 ) -> SpeechEngine:
     """
     Open the microphone and begin transcribing.
@@ -759,6 +773,9 @@ def start_mic_stream(
             for later re-transcription or refinement.
         voice_only_filter: Reject windows that are not voice (noise, room tone)
             before they reach the model, so they cannot become hallucinations.
+        speech_band_filter: Keep only the frequencies a voice uses (about 80 Hz
+            to 8 kHz), so hum, rumble and hiss are removed before the gate and
+            the model see the window.
     """
     global _engine
     if _engine is None:
@@ -770,6 +787,7 @@ def start_mic_stream(
             ),
             buffer_max_seconds=buffer_max_seconds,
             voice_only_filter=voice_only_filter,
+            speech_band_filter=speech_band_filter,
         )
     if getattr(_engine, "_stream", None) is None:
         if archive_dir is not None:

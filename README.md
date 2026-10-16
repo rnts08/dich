@@ -76,6 +76,7 @@ time that model is asked for.
 | `dich/backend.py` | text extraction, prompt strategies, cache, engine, contextual translation |
 | `dich/speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
 | `dich/voice_filter.py` | voice-only gate that rejects non-speech mic windows |
+| `dich/audio_filter.py` | speech-band front-end: drops hum/rumble/hiss before the gate |
 | `dich/cleanup.py` | rule-based removal of stutters, repetitions and filler sounds |
 | `dich/llm.py` | optional OpenAI-compatible rewrite endpoint |
 | `dich/theme.py` | palette and shared widget styles |
@@ -214,6 +215,7 @@ In Settings → Microphone:
 | **Input device** | Which microphone. *System default* follows macOS. |
 | **Speech model** | `tiny` → `large-v3-turbo`. Only runs while recording. |
 | **Voice-only filter** | Reject windows that are not speech (fans, keyboards, room tone) before the model sees them. |
+| **Speech-band filter** | Keep only the frequencies a voice uses (~80 Hz–7 kHz), so hum, rumble and hiss are removed before the gate and the model. |
 | **Clean up speech** | Remove stutters, repeated words and filler sounds automatically before translating. |
 | **Refine every** | Utterances between block re-translations. |
 | **Transcription window** | Seconds of audio per transcription. |
@@ -313,13 +315,23 @@ Plus a peak-amplitude floor that skips quiet windows outright, and a marker
 filter that strips boilerplate found *inside* real speech, because Whisper
 splices it into genuine sentences rather than always emitting it separately.
 
-A **voice-only gate** (`dich/voice_filter.py`) now runs ahead of the model on the
+A **speech-band front-end** (`dich/audio_filter.py`) runs even earlier: every
+microphone window is passed through a zero-phase 80 Hz–7 kHz Butterworth
+band-pass, so the mains hum, traffic rumble and top-end hiss that a real
+microphone picks up are gone before the gate judges the window and before the
+model reads it. The low edge earns its keep — it both un-buries quiet speech and
+stops low-frequency noise from pulling the gate's voice-band share down — while
+the high edge only trims the last kilohertz of hiss and breath noise.
+
+A **voice-only gate** (`dich/voice_filter.py`) then runs ahead of the model on the
 microphone. A window must look like a voice — most of its energy in the 300–3400
 Hz band, a low spectral flatness, a plausible zero-crossing rate, and a level
 above the room's own learned noise floor — or it is never transcribed. This is
 what stops a fan, a keyboard or plain room tone from becoming text, and it is the
 only such defence on the GPU path, where faster-whisper's `vad_filter` does not
-exist. A diacritic-free run of English function words is dropped as hallucinated
+exist. The noise floor is measured on the voice band rather than the whole
+signal, so a low rumble below speech cannot raise the bar a quiet voice has to
+clear. A diacritic-free run of English function words is dropped as hallucinated
 English as well; written Vietnamese is diacritic-heavy, so real speech is not
 mistaken for it.
 

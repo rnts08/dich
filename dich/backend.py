@@ -116,6 +116,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # GPU, so "auto" removes the CPU's accuracy/latency tradeoff.
     "stt_backend": "auto",
     "voice_only_filter": True,  # reject non-voice mic windows before the model
+    "speech_band_filter": True,  # keep only voice frequencies (drop hum/rumble/hiss)
     "refine_every": 6,  # utterances between block re-translations
     # --- app lifecycle (Milestone 0.5) ---
     "window_geometry": "",  # "WxH+X+Y", remembered between runs
