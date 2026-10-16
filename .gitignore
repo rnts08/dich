@@ -16,6 +16,11 @@ dist/
 test_data/
 *.log
 
+# Real meeting-room recordings of Vietnamese speakers (several capture methods)
+# with their interpretations, kept locally for evaluation only. Real voices and
+# derived transcripts must never be committed.
+real-world-data/
+
 # ---------------------------------------------------------------- models ----
 # Model weights can be gigabytes. Never commit them; fetch from HuggingFace.
 # Individual weight files, in case a model is staged inside the repo.
