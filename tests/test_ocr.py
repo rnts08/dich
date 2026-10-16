@@ -174,3 +174,85 @@ def test_pdftotext_returns_empty_when_poppler_missing(monkeypatch, backend):
     monkeypatch.setattr(backend.shutil, "which", lambda cmd: None)
 
     assert backend._pdftotext_text("x.pdf") == ""
+
+
+def test_image_suffix_from_magic_bytes(backend):
+    assert backend._image_suffix(b"\xff\xd8\xff\x10") == ".jpg"
+    assert backend._image_suffix(b"\x89PNG\r\n\x1a\n\x00") == ".png"
+    assert backend._image_suffix(b"GIF89a\x01") == ".gif"
+    assert backend._image_suffix(b"BM\x02\x00") == ".bmp"
+    assert backend._image_suffix(b"II*\x00") == ".tif"
+    assert backend._image_suffix(b"MM*\x00") == ".tif"
+    assert backend._image_suffix(b"random bytes") == ".png"
+
+
+def test_ocr_embedded_images_returns_empty_without_tesseract(monkeypatch, backend):
+    monkeypatch.setattr(backend, "tesseract_available", lambda: False)
+    assert backend.ocr_embedded_images("x.pdf") == ""
+
+
+def test_ocr_embedded_images_skips_images_without_data(monkeypatch, backend):
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(backend, "tesseract_available", lambda: True)
+
+    fake_img = types.SimpleNamespace(data=b"")
+    fake_page = types.SimpleNamespace(images=[fake_img])
+    fake_pypdf = types.ModuleType("pypdf")
+    fake_pypdf.PdfReader = lambda path: types.SimpleNamespace(pages=[fake_page])
+    monkeypatch.setitem(sys.modules, "pypdf", fake_pypdf)
+
+    assert backend.ocr_embedded_images("x.pdf") == ""
+
+
+def test_ocr_embedded_images_ocr_each_image(monkeypatch, backend):
+
+    def fake_run(cmd, **kw):
+        if cmd[0] == "tesseract":
+            return subprocess.CompletedProcess(cmd, 0, f"text of {cmd[1]}\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(backend, "tesseract_available", lambda: True)
+
+    fake_img = types.SimpleNamespace(data=b"\x89PNG\r\n\x1a\nfake")
+    fake_page = types.SimpleNamespace(images=[fake_img])
+    fake_pypdf = types.ModuleType("pypdf")
+    fake_pypdf.PdfReader = lambda path: types.SimpleNamespace(pages=[fake_page])
+    monkeypatch.setitem(sys.modules, "pypdf", fake_pypdf)
+
+    out = backend.ocr_embedded_images("x.pdf")
+
+    assert "--- image 1 on page 1 ---" in out
+    assert "text of" in out
+
+
+def test_read_pdf_appends_embedded_image_ocr(monkeypatch, backend, tmp_path):
+    # pypdf yields real text; embedded image OCR is appended.
+    fake_pypdf = types.ModuleType("pypdf")
+    fake_page = types.SimpleNamespace(
+        extract_text=lambda: "real text",
+        images=[types.SimpleNamespace(data=b"\x89PNG\r\n\x1a\nfake")],
+    )
+    fake_pypdf.PdfReader = lambda path: types.SimpleNamespace(pages=[fake_page])
+    monkeypatch.setitem(sys.modules, "pypdf", fake_pypdf)
+
+    monkeypatch.setitem(backend.CONFIG, "ocr_enabled", True)
+    monkeypatch.setattr(backend, "tesseract_available", lambda: True)
+
+    ocr_calls = []
+
+    def fake_ocr_image(image_path, lang=None):
+        ocr_calls.append(image_path)
+        return "DIAGRAM TEXT\n"
+
+    monkeypatch.setattr(backend, "ocr_image", fake_ocr_image)
+
+    out = backend._read_pdf("x.pdf")
+
+    assert "real text" in out
+    assert "--- image 1 on page 1 ---" in out
+    assert "DIAGRAM TEXT" in out
+    assert len(ocr_calls) == 1

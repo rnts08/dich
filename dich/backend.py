@@ -521,18 +521,92 @@ def _read_pdf(file_path: str) -> str:
     pypdf is tried first because it preserves diacritics and inline text; if it
     yields nothing, poppler's `pdftotext -layout` is used to keep columns and
     spacing closer to the page; otherwise OCR is the last resort for scanned
-    pages.
+    pages. When a text layer exists, embedded images (diagrams, photos, scans)
+    are OCR'd and appended so nothing is lost.
     """
     text = _pypdf_text(file_path)
     if text.strip():
+        if CONFIG.get("ocr_enabled") and tesseract_available():
+            image_text = ocr_embedded_images(file_path)
+            if image_text.strip():
+                text = text + "\n\n" + image_text
         return text
     text = _pdftotext_text(file_path)
     if text.strip():
+        if CONFIG.get("ocr_enabled") and tesseract_available():
+            image_text = ocr_embedded_images(file_path)
+            if image_text.strip():
+                text = text + "\n\n" + image_text
         return text
     # Scanned / image-only PDF: OCR is the only way to get the text out.
     if CONFIG.get("ocr_enabled") and tesseract_available():
         return ocr_pdf(file_path)
     return text
+
+
+# ---------------------------------------------------------------------------
+# OCR for embedded images inside text PDFs
+# ---------------------------------------------------------------------------
+
+
+def ocr_embedded_images(pdf_path: str, lang: Optional[str] = None) -> str:
+    """
+    OCR images embedded inside a PDF's pages and return their text.
+
+    Useful for text PDFs that carry diagrams, photos or scans as images:
+    the text layer is kept, and each embedded image is OCR'd with a marker.
+    Returns empty text when tesseract is absent or there are no images.
+    """
+    if not tesseract_available():
+        return ""
+    lang = lang or _tesseract_langs()
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return ""
+    try:
+        reader = PdfReader(pdf_path)
+    except Exception:  # noqa: BLE001 - unreadable PDF, skip images
+        return ""
+    parts: List[str] = []
+    for pageno, page in enumerate(reader.pages, 1):
+        try:
+            images = page.images or []
+        except Exception:  # noqa: BLE001 - a page without image support
+            images = []
+        for imgno, image in enumerate(images, 1):
+            data = getattr(image, "data", None)
+            if not data:
+                continue
+            suffix = _image_suffix(data)
+            fd, tmp = tempfile.mkstemp(suffix=suffix)
+            try:
+                with os.fdopen(fd, "wb") as tf:
+                    tf.write(data)
+                text = ocr_image(tmp, lang)
+                if text.strip():
+                    parts.append(f"--- image {imgno} on page {pageno} ---\n{text}")
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:  # noqa: BLE001 - best effort cleanup
+                    pass
+    return "\n\n".join(parts)
+
+
+def _image_suffix(data: bytes) -> str:
+    """Guess an image file extension from magic bytes so tesseract can read it."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    if data.startswith(b"BM"):
+        return ".bmp"
+    if data[:2] in (b"II", b"MM"):
+        return ".tif"
+    return ".png"
 
 
 # ---------------------------------------------------------------------------
