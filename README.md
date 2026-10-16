@@ -371,3 +371,7 @@ now also fast enough to run live. Silence is still never sent to the model —
 `SILENCE_FLOOR` in `speech_engine` guards every window, because Whisper on any
 backend invents text (on this machine: gibberish for the CPU path, short phrases
 like "ở đâu?" for the GPU path) when handed a quiet buffer.
+
+---
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/E3J2203KUB)
+
