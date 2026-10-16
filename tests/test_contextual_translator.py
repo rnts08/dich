@@ -110,3 +110,86 @@ def test_failing_listener_cannot_break_the_flow(translator):
     t = backend.ContextualTranslator(refine_every=2, on_update=bad_listener)
     assert t.add("câu một") == "EN<câu một>"  # must not raise
     assert t.transcript == ["câu một"]
+
+
+def test_combine_short_utterances_off_translates_each(backend, monkeypatch):
+    calls = []
+
+    def fake(sentence, history, model=None):
+        calls.append(sentence)
+        return f"EN<{sentence}>"
+
+    monkeypatch.setattr(backend, "translate_utterance", fake)
+    t = backend.ContextualTranslator(refine_every=100, combine_short_utterances=False)
+
+    assert t.add("vâng") == "EN<vâng>"
+    assert t.add("Tôi là người Việt.") == "EN<Tôi là người Việt.>"
+
+    assert calls == ["vâng", "Tôi là người Việt."]
+    assert t.transcript == ["vâng", "Tôi là người Việt."]
+
+
+def test_combine_short_utterances_buffers_until_a_long_one(backend, monkeypatch):
+    calls = []
+
+    def fake(sentence, history, model=None):
+        calls.append(sentence)
+        return f"EN<{sentence}>"
+
+    monkeypatch.setattr(backend, "translate_utterance", fake)
+    t = backend.ContextualTranslator(refine_every=100, combine_short_utterances=True)
+
+    # Short utterances are buffered and return nothing yet.
+    assert t.add("vâng") == ""
+    assert t.add("cảm ơn") == ""
+    assert t.transcript == []  # nothing entered the transcript yet
+    assert calls == []  # no model call so far
+
+    # A long utterance flushes the buffer and is translated with it.
+    assert (
+        t.add("Tôi tên là An, tôi sinh ra và lớn lên ở Hà Nội, Việt Nam.")
+        == "EN<vâng cảm ơn Tôi tên là An, tôi sinh ra và lớn lên ở Hà Nội, Việt Nam.>"
+    )
+    assert calls == [
+        "vâng cảm ơn Tôi tên là An, tôi sinh ra và lớn lên ở Hà Nội, Việt Nam."
+    ]
+    assert t.transcript == [
+        "vâng cảm ơn Tôi tên là An, tôi sinh ra và lớn lên ở Hà Nội, Việt Nam."
+    ]
+
+
+def test_combine_short_utterances_flushes_at_finalize(backend, monkeypatch):
+    calls = []
+
+    def fake(sentence, history, model=None):
+        calls.append(sentence)
+        return f"EN<{sentence}>"
+
+    monkeypatch.setattr(backend, "translate_utterance", fake)
+    t = backend.ContextualTranslator(refine_every=100, combine_short_utterances=True)
+
+    t.add("vâng")
+    t.add("cảm ơn")
+    assert t.transcript == []  # buffered, not yet translated
+
+    t.finalize()
+
+    assert calls == ["vâng cảm ơn"]
+    assert t.transcript == ["vâng cảm ơn"]
+    assert t._combine_buffer == []  # buffer consumed
+
+
+def test_combine_threshold_is_inclusive(backend, monkeypatch):
+    # COMBINE_MIN_CHARS is 30: exactly-30 chars are long enough to translate.
+    calls = []
+
+    def fake(sentence, history, model=None):
+        calls.append(sentence)
+        return f"EN<{sentence}>"
+
+    monkeypatch.setattr(backend, "translate_utterance", fake)
+    t = backend.ContextualTranslator(refine_every=100, combine_short_utterances=True)
+
+    exactly_thirty = "a" * 30
+    assert t.add(exactly_thirty) == f"EN<{exactly_thirty}>"
+    assert calls == [exactly_thirty]

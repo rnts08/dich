@@ -1570,6 +1570,11 @@ def clear_audio_archive(archive_dir: Optional[str | Path] = None) -> int:
 CONTEXT_TURNS = 3  # prior utterances supplied as context
 REFINE_EVERY = 6  # utterances between whole-block re-translations
 
+# Utterances shorter than this (in characters) are combined with the next one
+# into a single model call when combining is enabled, cutting overhead and
+# giving fragments ("vâng", "được", "cảm ơn") more context.
+COMBINE_MIN_CHARS = 30
+
 
 def _context_messages(sentence: str, history: List[tuple], style: str) -> list:
     """
@@ -1611,13 +1616,21 @@ class ContextualTranslator:
     """
 
     def __init__(
-        self, refine_every: int = REFINE_EVERY, on_refine=None, on_update=None
+        self,
+        refine_every: int = REFINE_EVERY,
+        on_refine=None,
+        on_update=None,
+        combine_short_utterances: bool = False,
     ):
         self.transcript: List[str] = []
         self.translation: List[str] = []
         self.elaborate: List[bool] = []  # True once a line has been refined
         self.refined_blocks: List[dict] = []  # {start, end, text}
         self.refine_every = max(1, refine_every)
+        self.combine_short = combine_short_utterances
+        # Short utterances held here until they can be combined with the next
+        # one into a single model call.
+        self._combine_buffer: List[str] = []
         self._on_refine = on_refine
         self._on_update = on_update
         self._last_error: Optional[str] = None
@@ -1638,10 +1651,23 @@ class ContextualTranslator:
         Every `refine_every` utterances, only the newly accumulated ones are
         re-translated as a passage; earlier output is left alone because it has
         already been through refinement.
+
+        When combining short utterances is enabled, fragments shorter than
+        `COMBINE_MIN_CHARS` characters are buffered and translated together with
+        the next utterance, cutting model calls and giving fragments more
+        context.
         """
         sentence = sentence.strip()
         if not sentence:
             return ""
+
+        if self.combine_short and len(sentence) < COMBINE_MIN_CHARS:
+            self._combine_buffer.append(sentence)
+            return ""  # shown once combined with the following utterance
+
+        if self._combine_buffer:
+            sentence = " ".join(self._combine_buffer + [sentence])
+            self._combine_buffer = []
 
         index = len(self.transcript)
         history = list(zip(self.transcript, self.translation, strict=False))
@@ -1750,7 +1776,22 @@ class ContextualTranslator:
         Without this, a partial trailing block -- four utterances after the last
         `refine_every` boundary -- would stay as provisional line-by-line guesses
         even though nothing further will give them context.
+
+        Any buffered short utterances are flushed as one final translation so
+        they are not dropped when recording stops.
         """
+        if self.combine_short and self._combine_buffer:
+            sentence = " ".join(self._combine_buffer)
+            self._combine_buffer = []
+            # Force-translate the buffered fragment as one final utterance so it
+            # is not re-buffered (it is already short) and not re-refined.
+            index = len(self.transcript)
+            history = list(zip(self.transcript, self.translation, strict=False))
+            english = translate_utterance(sentence, history)
+            self.transcript.append(sentence)
+            self.translation.append(english)
+            self.elaborate.append(True)
+            self._notify(self._on_update, index, english)
         if self.block_start >= len(self.transcript):
             return False
         return self.refine(self.block_start)

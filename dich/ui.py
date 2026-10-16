@@ -2131,7 +2131,10 @@ class DichApp:
 
     def _new_translator(self):
         self.translator = backend.ContextualTranslator(
-            refine_every=int(backend.CONFIG.get("refine_every", 6))
+            refine_every=int(backend.CONFIG.get("refine_every", 6)),
+            combine_short_utterances=bool(
+                backend.CONFIG.get("combine_short_utterances", False)
+            ),
         )
 
     def start_recording(self):
