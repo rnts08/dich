@@ -17,6 +17,20 @@ def test_missing_file_yields_defaults(backend, tmp_path):
     assert config["model"] == backend.DEFAULT_CONFIG["model"]
 
 
+def test_defaults_include_cleanup_and_llm_keys(backend):
+    # These gate features that must stay off until a user asks for them.
+    assert backend.DEFAULT_CONFIG["clean_disfluencies"] is False
+    assert backend.DEFAULT_CONFIG["llm_enabled"] is False
+    for key in (
+        "llm_base_url",
+        "llm_api_key",
+        "llm_model",
+        "llm_instruction",
+        "llm_timeout",
+    ):
+        assert key in backend.DEFAULT_CONFIG
+
+
 def test_corrupt_file_yields_defaults(backend, tmp_path):
     path = tmp_path / "config.json"
     path.write_text("{not json", encoding="utf-8")

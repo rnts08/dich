@@ -25,7 +25,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import List, Optional
 
-from . import backend, quality, theme
+from . import backend, cleanup, quality, theme
 from .backend import (
     CONFIG_PATH,
     Progress,
@@ -686,6 +686,15 @@ class DichApp:
             command=self.translate_clipboard,
         )
         edit_menu.add_command(label="Refine Speech", command=self.refine_speech)
+        edit_menu.add_command(label="Clean up Speech", command=self.cleanup_speech)
+        edit_menu.add_command(
+            label="Rewrite Transcript (API)…",
+            command=lambda: self.rewrite_api("transcript"),
+        )
+        edit_menu.add_command(
+            label="Rewrite Translation (API)…",
+            command=lambda: self.rewrite_api("translation"),
+        )
         edit_menu.add_separator()
         edit_menu.add_command(label="Clear Translation", command=self.clear_translate)
         edit_menu.add_command(label="Clear Speech", command=self.clear_speech)
@@ -917,6 +926,13 @@ class DichApp:
         theme.RoundedButton(
             toolbar, "Refine", command=self.refine_speech, variant="ghost"
         ).pack(side="left", padx=(0, theme.SPACE_2))
+        theme.RoundedButton(
+            toolbar, "Clean up", command=self.cleanup_speech, variant="ghost"
+        ).pack(side="left", padx=(0, theme.SPACE_2))
+        self.rewrite_button = theme.RoundedButton(
+            toolbar, "Rewrite ▾", command=self._show_rewrite_menu, variant="ghost"
+        )
+        self.rewrite_button.pack(side="left", padx=(0, theme.SPACE_2))
         theme.RoundedButton(
             toolbar, "Save…", command=self.save_speech, variant="ghost"
         ).pack(side="left", padx=(0, theme.SPACE_2))
@@ -1180,6 +1196,18 @@ class DichApp:
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
         row += 1
 
+        self.clean_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("clean_disfluencies", False))
+        )
+        ttk.Checkbutton(
+            form,
+            text="Remove stutters, repeated words and filler sounds "
+            '("ừm", "ờ") before translating',
+            variable=self.clean_var,
+            command=self._on_clean_toggled,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 1
+
         ttk.Label(
             form,
             text="Only runs while recording. Realtime figures measured for "
@@ -1338,6 +1366,115 @@ class DichApp:
             "(needs tesseract + poppler; Vietnamese needs its vie lang data)",
             variable=self.ocr_var,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 2
+
+        # --- external LLM rewrite -------------------------------------------
+        self._section(form, "External LLM (optional)", row)
+        row += 1
+
+        ttk.Label(
+            form,
+            text="Send a transcript or translation to an OpenAI-compatible chat "
+            "API and have it rewritten to capture meaning without losing "
+            "context. Nothing leaves the machine unless this is enabled and a "
+            "rewrite is invoked.",
+            style="Faint.TLabel",
+            wraplength=560,
+            justify="left",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_2))
+        row += 1
+
+        self.llm_enabled_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("llm_enabled", False))
+        )
+        ttk.Checkbutton(
+            form,
+            text="Enable external LLM rewriting",
+            variable=self.llm_enabled_var,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 1
+
+        ttk.Label(form, text="Base URL").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
+        self.llm_base_var = tk.StringVar(
+            value=str(backend.CONFIG.get("llm_base_url", ""))
+        )
+        ttk.Entry(form, textvariable=self.llm_base_var, width=54).grid(
+            row=row, column=1, columnspan=2, sticky="w", pady=theme.SPACE_1
+        )
+        row += 1
+
+        ttk.Label(
+            form,
+            text="e.g. https://api.openai.com/v1, http://localhost:11434/v1 "
+            "(Ollama), http://localhost:1234/v1 (LM Studio)",
+            style="Faint.TLabel",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_2))
+        row += 1
+
+        ttk.Label(form, text="Model").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
+        self.llm_model_var = tk.StringVar(
+            value=str(backend.CONFIG.get("llm_model", ""))
+        )
+        ttk.Entry(form, textvariable=self.llm_model_var, width=54).grid(
+            row=row, column=1, columnspan=2, sticky="w", pady=theme.SPACE_1
+        )
+        row += 1
+
+        ttk.Label(form, text="API key").grid(
+            row=row, column=0, sticky="w", pady=theme.SPACE_1
+        )
+        self.llm_api_var = tk.StringVar(
+            value=str(backend.CONFIG.get("llm_api_key", ""))
+        )
+        ttk.Entry(form, textvariable=self.llm_api_var, width=54, show="•").grid(
+            row=row, column=1, columnspan=2, sticky="w", pady=theme.SPACE_1
+        )
+        row += 1
+
+        ttk.Label(
+            form,
+            text="Left blank for a local server. Stored in plain text in config.json.",
+            style="Faint.TLabel",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_2))
+        row += 1
+
+        ttk.Label(form, text="Instruction (optional)").grid(
+            row=row, column=0, sticky="nw", pady=theme.SPACE_1
+        )
+        self.llm_instruction_text = tk.Text(
+            form, height=3, width=54, wrap="word", relief="solid", borderwidth=1
+        )
+        self.llm_instruction_text.insert(
+            "1.0", str(backend.CONFIG.get("llm_instruction", "") or "")
+        )
+        self.llm_instruction_text.grid(
+            row=row, column=1, columnspan=2, sticky="w", pady=theme.SPACE_1
+        )
+        row += 1
+
+        ttk.Label(
+            form,
+            text="Overrides the built-in edit prompt. Leave empty to use the "
+            "default for the transcript or translation.",
+            style="Faint.TLabel",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, theme.SPACE_2))
+        row += 1
+
+        self.llm_status = ttk.Label(form, text="", style="Faint.TLabel")
+        self.llm_status.grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=theme.SPACE_1
+        )
+        theme.RoundedButton(
+            form,
+            "Test connection",
+            command=self.test_llm,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=row, column=2, padx=theme.SPACE_2, pady=theme.SPACE_1)
         row += 2
 
         # --- translation cache -----------------------------------------------
@@ -2099,30 +2236,34 @@ class DichApp:
 
     def _on_audio_transcribed(self, result):
         self._file_transcribing = False  # the file job's phases are over
-        count = len(result.sentences)
+        # Normalise once, up front, so the pane, the progress counter and the
+        # translator all describe the same list of utterances.
+        sentences = [self.translator.normalize(s) for s in result.sentences]
+        sentences = [s for s in sentences if s]
+        count = len(sentences)
         if not count:
             # Silence is left untranslated on purpose, so "0 sentences" is a
             # correct outcome rather than a failure — but it must be named,
             # otherwise a quiet file is indistinguishable from a broken one.
-            self.mic_status.configure(text="no speech detected", foreground=YELLOW)
+            self.mic_status.configure(text="no usable speech", foreground=YELLOW)
             self.transcript_pane.set("")
             self._file_translate_total = 0
             self.status.set_stats("0 sentences", YELLOW)
             self.status.set_hint(
-                f"No speech found in {result.duration:.0f}s of audio. "
+                f"No usable speech found in {result.duration:.0f}s of audio. "
                 "Silence is deliberately not transcribed — check the recording "
                 "has audible voices and try again."
             )
             self.root.after(0, lambda: self._stream_sentences([]))
             return
         self.mic_status.configure(text=f"{count} sentences, {result.duration:.0f}s")
-        self.transcript_pane.set("\n".join(result.sentences))
+        self.transcript_pane.set("\n".join(sentences))
         self.status.set_stats("translating…")
         # The translation is the second half of a file job: show how far through
         # the sentences — and so the file — the translation has got.
         self._file_translate_total = count
         # Feed the sentences in on the UI thread so the panes update live.
-        self.root.after(0, lambda: self._stream_sentences(list(result.sentences)))
+        self.root.after(0, lambda: self._stream_sentences(list(sentences)))
 
     def _stream_sentences(self, sentences):
         """Translate sentences one at a time, letting context accumulate."""
@@ -2213,12 +2354,183 @@ class DichApp:
         else:
             self.status.set_stats("refine failed", RED)
 
+    # -- disfluency cleanup & external-LLM rewrite -------------------------
+    def cleanup_speech(self):
+        """Remove stutters, repetitions and filler sounds, then re-translate."""
+        if self.translator is None or not self.translator.transcript:
+            messagebox.showinfo("Nothing to clean", "Record or open some audio first.")
+            return
+        self.status.set_busy("cleaning up…")
+        self.worker.run(
+            self.translator.cleanup,
+            on_success=self._on_cleaned,
+            on_error=self._on_speech_error,
+        )
+
+    def _on_cleaned(self, stats):
+        self.transcript_pane.set("\n\n".join(self.translator.transcript))
+        self.speech_translation_pane.set(self.translator.render_refined())
+        changed = bool(stats.get("changed"))
+        self.status.set_stats(cleanup.summarize(stats), GREEN if changed else FG)
+        if changed and not self.translator.transcript:
+            self.status.set_hint("every line was filler — the transcript is empty now")
+
+    def _show_rewrite_menu(self):
+        """Offer the two rewrite targets, since each keeps its own language."""
+        menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(
+            label="Rewrite transcript (Vietnamese)…",
+            command=lambda: self.rewrite_api("transcript"),
+        )
+        menu.add_command(
+            label="Rewrite translation (English)…",
+            command=lambda: self.rewrite_api("translation"),
+        )
+        try:
+            menu.tk_popup(
+                self.rewrite_button.winfo_rootx(),
+                self.rewrite_button.winfo_rooty() + self.rewrite_button.winfo_height(),
+            )
+        finally:
+            menu.grab_release()
+
+    def _speech_text(self, kind: str) -> str:
+        if kind == "transcript":
+            return self.transcript_pane.get().strip()
+        return (
+            self.speech_translation_pane.markdown_source()
+            or self.speech_translation_pane.get()
+        ).strip()
+
+    def rewrite_api(self, kind: str):
+        """Send the transcript or translation to the configured LLM to rewrite."""
+        if not backend.llm_available():
+            messagebox.showinfo(
+                "External LLM not set up",
+                "Turn on external LLM rewriting and set a base URL and model in "
+                "Settings → External LLM.\n\nNothing is sent until you do.",
+            )
+            return
+        text = self._speech_text(kind)
+        if not text:
+            messagebox.showinfo(
+                "Nothing to rewrite", "Record or open some audio first."
+            )
+            return
+        label = "transcript" if kind == "transcript" else "translation"
+        self.status.set_busy(
+            f"rewriting {label} via API…", hint="contacting the configured LLM"
+        )
+        self.worker.run(
+            backend.rewrite_with_llm,
+            text,
+            kind,
+            on_success=lambda out: self._on_rewritten(kind, text, out),
+            on_error=self._on_rewrite_error,
+        )
+
+    def _on_rewritten(self, kind: str, original: str, rewritten: str):
+        if not rewritten.strip() or rewritten.strip() == original.strip():
+            self.status.set_stats("rewrite made no change")
+            return
+        self.status.set_stats("rewrite ready", GREEN)
+        self._show_rewrite_result(kind, rewritten)
+
+    def _on_rewrite_error(self, exc: Exception, tb: str):
+        self.status.set_stats("rewrite failed", RED)
+        self.status.set_hint(str(exc))
+        print(tb)
+
+    def _show_rewrite_result(self, kind: str, rewritten: str):
+        """Show the rewritten text and offer to replace the pane with it."""
+        win = tk.Toplevel(self.root)
+        win.title("Rewrite result")
+        win.configure(bg=BG)
+        win.transient(self.root)
+        win.geometry("720x460")
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(1, weight=1)
+
+        what = (
+            "transcript (Vietnamese)"
+            if kind == "transcript"
+            else "translation (English)"
+        )
+        ttk.Label(
+            win,
+            text=f"Rewritten {what} — review before replacing",
+            style="Faint.TLabel",
+        ).grid(row=0, column=0, sticky="w", padx=theme.SPACE_3, pady=theme.SPACE_3)
+
+        body = tk.Text(win, wrap="word", relief="solid", borderwidth=1)
+        body.insert("1.0", rewritten)
+        body.configure(state="disabled")
+        body.grid(row=1, column=0, sticky="nsew", padx=theme.SPACE_3)
+
+        buttons = tk.Frame(win, bg=BG)
+        buttons.grid(
+            row=2, column=0, sticky="e", padx=theme.SPACE_3, pady=theme.SPACE_3
+        )
+
+        def replace():
+            win.destroy()
+            if kind == "transcript":
+                self._apply_transcript_rewrite(rewritten)
+            else:
+                self.speech_translation_pane.set(rewritten)
+                self.status.set_hint("translation replaced with the rewritten text")
+
+        theme.RoundedButton(
+            buttons, "Replace", command=replace, variant="primary"
+        ).pack(side="left", padx=theme.SPACE_2)
+        theme.RoundedButton(
+            buttons,
+            "Copy",
+            command=lambda: self._copy_text(rewritten),
+            variant="ghost",
+            background=BG,
+        ).pack(side="left", padx=theme.SPACE_2)
+        theme.RoundedButton(
+            buttons, "Close", command=win.destroy, variant="ghost", background=BG
+        ).pack(side="left")
+
+    def _copy_text(self, text: str):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status.set_hint("copied to clipboard")
+
+    def _apply_transcript_rewrite(self, text: str):
+        """Replace the transcript with the rewritten text and re-translate it."""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if self.translator is None:
+            self.transcript_pane.set(text)
+            return
+        self.transcript_pane.set("\n\n".join(lines))
+        self.status.set_busy("re-translating the rewritten transcript…")
+        self.worker.run(
+            self.translator.replace,
+            lines,
+            on_success=lambda _result: self._on_replaced(),
+            on_error=self._on_speech_error,
+        )
+
+    def _on_replaced(self):
+        self.speech_translation_pane.set(self.translator.render_refined())
+        stats = self.translator.stats()
+        if stats["utterances"]:
+            self.status.set_stats(
+                f"{stats['refined']} refined of {stats['utterances']}", GREEN
+            )
+        else:
+            self.status.set_stats("no text left")
+
     def _new_translator(self):
         self.translator = backend.ContextualTranslator(
             refine_every=int(backend.CONFIG.get("refine_every", 6)),
             combine_short_utterances=bool(
                 backend.CONFIG.get("combine_short_utterances", False)
             ),
+            clean_disfluencies=bool(backend.CONFIG.get("clean_disfluencies", False)),
         )
 
     def start_recording(self):
@@ -2438,7 +2750,9 @@ class DichApp:
                 self._last_partial = partial
                 self.worker.post(self._show_partial, partial)
             for sentence in speech_engine.drain_final_sentences():
-                key = sentence.strip()
+                # Normalise here as well as in the translator so the pane shows
+                # exactly the text that was translated (cleanup is idempotent).
+                key = self.translator.normalize(sentence)
                 if not key:
                     continue
                 # _render_speech runs on its own thread, so the pane update
@@ -2542,6 +2856,12 @@ class DichApp:
                 "ocr_enabled": bool(self.ocr_var.get()),
                 "archive_audio": bool(self.archive_var.get()),
                 "audio_archive_path": self.archive_path_var.get().strip(),
+                "clean_disfluencies": bool(self.clean_var.get()),
+                "llm_enabled": bool(self.llm_enabled_var.get()),
+                "llm_base_url": self.llm_base_var.get().strip(),
+                "llm_api_key": self.llm_api_var.get().strip(),
+                "llm_model": self.llm_model_var.get().strip(),
+                "llm_instruction": self.llm_instruction_text.get("1.0", "end").strip(),
             }
         )
 
@@ -2559,11 +2879,50 @@ class DichApp:
         self._refresh_archive_storage()
         self.settings_status.configure(text="Saved — model reloaded", foreground=GREEN)
 
+    def test_llm(self):
+        """Prove the configured endpoint answers, using the current fields."""
+        base = self.llm_base_var.get().strip()
+        model = self.llm_model_var.get().strip()
+        if not base or not model:
+            self.llm_status.configure(
+                text="set a base URL and model first", foreground=YELLOW
+            )
+            return
+        cfg = dict(backend.CONFIG)
+        cfg.update(
+            {
+                "llm_base_url": base,
+                "llm_model": model,
+                "llm_api_key": self.llm_api_var.get().strip(),
+                "llm_instruction": self.llm_instruction_text.get("1.0", "end").strip(),
+            }
+        )
+        self.llm_status.configure(text="testing…", foreground=FG)
+
+        def run():
+            from . import llm
+
+            return llm.check(config=cfg)
+
+        self.worker.run(run, on_success=self._on_llm_ok, on_error=self._on_llm_failed)
+
+    def _on_llm_ok(self, reply: str):
+        snippet = (reply or "").strip().replace("\n", " ")[:80]
+        self.llm_status.configure(text=f"connected — {snippet}", foreground=GREEN)
+
+    def _on_llm_failed(self, exc: Exception, tb: str):
+        self.llm_status.configure(text=f"failed: {exc}", foreground=RED)
+        print(tb)
+
     def clear_cache(self):
         count = cache_clear()
         self.cache_status.configure(text=self._cache_summary())
         self.cache_label.configure(text="")
         self.status.set_hint(f"cleared {count} cached translation(s)")
+
+    def _on_clean_toggled(self):
+        """Persist the cleanup toggle so the next translator picks it up."""
+        backend.CONFIG["clean_disfluencies"] = bool(self.clean_var.get())
 
     # -- microphone archive -------------------------------------------------
     def _on_archive_toggled(self):

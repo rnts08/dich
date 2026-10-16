@@ -76,6 +76,8 @@ time that model is asked for.
 | `dich/backend.py` | text extraction, prompt strategies, cache, engine, contextual translation |
 | `dich/speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
 | `dich/voice_filter.py` | voice-only gate that rejects non-speech mic windows |
+| `dich/cleanup.py` | rule-based removal of stutters, repetitions and filler sounds |
+| `dich/llm.py` | optional OpenAI-compatible rewrite endpoint |
 | `dich/theme.py` | palette and shared widget styles |
 | `dich/VERSION` | single source of truth for the version |
 | `dich/config.json` | first-run seed; the live copy lives at `~/.config/dich` |
@@ -164,6 +166,45 @@ a long recording is never a blank bar. **Save…** writes the Vietnamese transcr
 and the English translation together — labelled sections in `.txt`, or a
 side-by-side table in `.md` — so the source can be checked next to the output.
 
+### Cleaning up disfluencies
+
+Spoken Vietnamese arrives full of the mechanics of talking: hesitation sounds
+("ừm", "ờ"), immediate stutters ("tôi tôi"), repeated words and false starts.
+Whisper transcribes them faithfully, and they then get translated faithfully.
+
+**Clean up** strips them with plain rules — no model, no network, so it is
+instant and works offline. It removes whole-word hesitations, isolated
+interjections wedged between pauses, and exact immediate repetitions, while
+leaving Vietnamese reduplication ("người người", "ngày ngày") and anything
+separated by punctuation alone. The cleaned transcript is then re-translated, so
+both panes reflect it. **Settings → Microphone → “Remove stutters, repeated
+words and filler sounds”** does the same automatically as utterances arrive.
+
+The one thing rules cannot resolve is a false start that only makes sense with
+the sentence around it; the external-LLM rewrite below handles that.
+
+### Rewriting with an external LLM
+
+For a stronger, meaning-aware rewrite, the app can send the Vietnamese transcript
+or the English translation to any **OpenAI-compatible chat endpoint** — OpenAI,
+Ollama, LM Studio, llama.cpp's server, vLLM, OpenRouter and so on. This is off by
+default and never happens unless it is turned on and a rewrite is invoked.
+
+Set it up in **Settings → External LLM**: enable the checkbox, then fill in a
+**base URL** (`https://api.openai.com/v1`, `http://localhost:11434/v1` for
+Ollama, `http://localhost:1234/v1` for LM Studio), the **model** name, and an
+**API key** (left blank for a local server). **Test connection** proves it
+answers. An optional **Instruction** overrides the built-in prompt.
+
+On the Speech tab, **Rewrite ▾** offers the two targets — *transcript
+(Vietnamese)* keeps Vietnamese, *translation (English)* keeps English — and the
+same actions live in the Edit menu. The result opens in a window to review before
+replacing the pane; a transcript rewrite is re-translated. The built-in prompt
+asks the model to preserve every detail and not lose context.
+
+> The API key is stored in plain text in `~/.config/dich/config.json`. Leave the
+> feature off to keep everything local.
+
 ## Microphone settings
 
 In Settings → Microphone:
@@ -173,6 +214,7 @@ In Settings → Microphone:
 | **Input device** | Which microphone. *System default* follows macOS. |
 | **Speech model** | `tiny` → `large-v3-turbo`. Only runs while recording. |
 | **Voice-only filter** | Reject windows that are not speech (fans, keyboards, room tone) before the model sees them. |
+| **Clean up speech** | Remove stutters, repeated words and filler sounds automatically before translating. |
 | **Refine every** | Utterances between block re-translations. |
 | **Transcription window** | Seconds of audio per transcription. |
 | **Buffer ceiling** | Seconds of audio held before the oldest is dropped. |

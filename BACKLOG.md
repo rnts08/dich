@@ -33,6 +33,10 @@ Working today, verified against the code rather than assumed:
   (`large-v3-turbo`, 31× realtime), CPU `faster-whisper` as fallback.
   Decibel meter, flat progress bar, push-to-talk, mic archive (raw WAV saved for
   re-transcription), idle + VRAM-pressure model unload.
+- **Cleanup and rewrite** — a rule-based pass removes stutters, repeated words
+  and filler sounds from the transcript offline (on demand or automatically),
+  and an optional OpenAI-compatible endpoint can rewrite the transcript or the
+  translation for meaning. The rewrite is off by default and opt-in.
 - **Config and models** under `~/.config/dich`, loading offline. No server
   process to run. Model picker lists what is cached with size/RAM estimates.
 - **Menu bar, design tokens, rounded controls, markdown rendering, buffer-memory

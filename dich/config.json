@@ -21,5 +21,12 @@
   "archive_audio": false,
   "audio_archive_path": "",
   "last_document": "",
-  "notes": "translategemma serves its own chat template in-process; Qwen3 is the fallback. mic_device_index null = system default; stt_backend 'auto' runs speech-to-text on the GPU via mlx-audio when available (large-v3-turbo: 31x realtime on the GPU) and falls back to the CPU otherwise."
+  "clean_disfluencies": false,
+  "llm_enabled": false,
+  "llm_base_url": "",
+  "llm_api_key": "",
+  "llm_model": "",
+  "llm_instruction": "",
+  "llm_timeout": 120,
+  "notes": "translategemma serves its own chat template in-process; Qwen3 is the fallback. mic_device_index null = system default; stt_backend 'auto' runs speech-to-text on the GPU via mlx-audio when available (large-v3-turbo: 31x realtime on the GPU) and falls back to the CPU otherwise. llm_* enable an optional OpenAI-compatible rewrite endpoint; nothing is sent unless llm_enabled is true and a rewrite is invoked."
 }

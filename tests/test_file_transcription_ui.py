@@ -65,12 +65,13 @@ def test_empty_result_reports_no_speech():
         ),
         transcript_pane=SimpleNamespace(set=lambda t: events.append(("pane", t))),
         root=SimpleNamespace(after=lambda delay, fn: events.append(("after", delay))),
+        translator=SimpleNamespace(normalize=lambda s: s),
     )
 
     ui.DichApp._on_audio_transcribed(app, result)
 
     mic_text = " ".join(e[1].get("text", "") for e in events if e[0] == "mic")
-    assert "no speech" in mic_text
+    assert "no usable speech" in mic_text
     hint = next(e[1] for e in events if e[0] == "hint")
     assert "silence is deliberately not transcribed" in hint.lower()
     assert any(e[0] == "stats" and e[1][0] == "0 sentences" for e in events)
@@ -89,6 +90,7 @@ def test_non_empty_result_still_reports_the_count():
         ),
         transcript_pane=SimpleNamespace(set=lambda t: events.append(("pane", t))),
         root=SimpleNamespace(after=lambda delay, fn: events.append(("after", delay))),
+        translator=SimpleNamespace(normalize=lambda s: s),
     )
 
     ui.DichApp._on_audio_transcribed(app, result)

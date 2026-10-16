@@ -30,6 +30,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
+from .cleanup import cleanup as cleanup_transcript
+from .cleanup import cleanup_stats as transcript_cleanup_stats
+
 logging.basicConfig(
     level=os.environ.get("DICH_LOG_LEVEL", "WARNING").upper(),
     format="%(levelname)s:%(name)s:%(message)s",
@@ -127,6 +130,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "archive_audio": False,  # save raw mic input for later re-transcription
     "audio_archive_path": "",  # defaults to <config>/audio when empty
     "last_document": "",  # path reopened on launch
+    # --- disfluency cleanup ---------------------------------------------
+    "clean_disfluencies": False,  # strip stutters/repetitions before translating
+    # --- external LLM rewrite (optional, opt-in) ------------------------
+    # Off by default: nothing is sent to a third-party endpoint until the user
+    # enables it and invokes a rewrite.
+    "llm_enabled": False,
+    "llm_base_url": "",  # e.g. https://api.openai.com/v1 or http://localhost:11434/v1
+    "llm_api_key": "",  # stored in plain text in config.json; blank for local servers
+    "llm_model": "",
+    "llm_instruction": "",  # optional override of the built-in edit prompt
+    "llm_timeout": 120,
 }
 
 
@@ -1622,6 +1636,7 @@ class ContextualTranslator:
         on_refine=None,
         on_update=None,
         combine_short_utterances: bool = False,
+        clean_disfluencies: bool = False,
     ):
         self.transcript: List[str] = []
         self.translation: List[str] = []
@@ -1629,6 +1644,9 @@ class ContextualTranslator:
         self.refined_blocks: List[dict] = []  # {start, end, text}
         self.refine_every = max(1, refine_every)
         self.combine_short = combine_short_utterances
+        # When on, utterances are stripped of stutters and filler sounds as they
+        # arrive, so both the transcript and its translation are clean.
+        self.clean = clean_disfluencies
         # Short utterances held here until they can be combined with the next
         # one into a single model call.
         self._combine_buffer: List[str] = []
@@ -1645,6 +1663,59 @@ class ContextualTranslator:
     def pending_count(self) -> int:
         return len(self.transcript) - self.refined_count
 
+    def normalize(self, sentence: str) -> str:
+        """
+        Apply the configured disfluency cleanup to one utterance.
+
+        Exposed so the UI can show exactly what the translator stored: when
+        automatic cleanup is on, the transcript pane and the translator must not
+        disagree about whether "ừm" was kept.
+        """
+        sentence = (sentence or "").strip()
+        if not self.clean:
+            return sentence
+        return cleanup_transcript(sentence)
+
+    def replace(self, lines: List[str]) -> None:
+        """
+        Reset to these utterances and translate them again from scratch.
+
+        Used after a cleanup or an API rewrite has changed the transcript: the
+        previous translations no longer describe the text, so every line is
+        re-translated with the accumulated context of the cleaned ones.
+        """
+        self.transcript = []
+        self.translation = []
+        self.elaborate = []
+        self.refined_blocks = []
+        self._combine_buffer = []
+        self._last_error = None
+        for line in lines:
+            text = (line or "").strip()
+            if text:
+                self.add(text)
+        self.finalize()
+
+    def cleanup(self) -> Dict[str, object]:
+        """
+        Remove stutters, repetitions and filler sounds, then re-translate if
+        anything changed.
+
+        A no-op case is common (clean audio, or automatic cleanup already on),
+        so the work is skipped and the figures reported rather than silently
+        re-running the model over unchanged text.
+        """
+        original = list(self.transcript)
+        if not original:
+            return {"removed": 0, "changed": False}
+        cleaned = [cleanup_transcript(line) for line in original]
+        stats = transcript_cleanup_stats(" ".join(original), " ".join(cleaned))
+        kept = [line for line in cleaned if line.strip()]
+        if kept != original:
+            self.replace(kept)
+            stats = transcript_cleanup_stats(" ".join(original), " ".join(kept))
+        return stats
+
     def add(self, sentence: str) -> str:
         """
         Add a Vietnamese utterance and return its current translation.
@@ -1658,7 +1729,7 @@ class ContextualTranslator:
         the next utterance, cutting model calls and giving fragments more
         context.
         """
-        sentence = sentence.strip()
+        sentence = self.normalize(sentence)
         if not sentence:
             return ""
 
@@ -1932,6 +2003,50 @@ def format_speech_export(
 def _md_cell(text: str) -> str:
     """Escape a paragraph for a Markdown table cell."""
     return text.replace("|", "\\|").replace("\n", "<br>")
+
+
+# ---------------------------------------------------------------------------
+# External LLM rewrite (optional)
+# ---------------------------------------------------------------------------
+
+
+def llm_available() -> bool:
+    """
+    True when external rewriting is switched on and configured enough to use.
+
+    The UI checks this before offering the rewrite actions, so a user who has
+    never touched the setting is never shown a dialog that would send text off
+    the machine.
+    """
+    init_config()
+    return (
+        bool(CONFIG.get("llm_enabled"))
+        and bool(str(CONFIG.get("llm_base_url") or "").strip())
+        and bool(str(CONFIG.get("llm_model") or "").strip())
+    )
+
+
+def rewrite_with_llm(
+    text: str, kind: str = "translation", instruction: Optional[str] = None
+) -> str:
+    """
+    Send one transcript or translation to the configured LLM and return its reply.
+
+    `kind` is "transcript" (keep Vietnamese) or "translation" (keep English).
+    Raises dich.llm.LLMError on a missing setting or a failed request.
+    """
+    init_config()
+    from . import llm
+
+    return llm.rewrite(text, kind=kind, instruction=instruction, config=CONFIG)
+
+
+def check_llm() -> str:
+    """Round-trip a tiny text so Settings can prove a connection."""
+    init_config()
+    from . import llm
+
+    return llm.check(config=CONFIG)
 
 
 # ---------------------------------------------------------------------------
