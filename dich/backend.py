@@ -112,6 +112,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # this machine: large-v3-turbo is 3.1x realtime on the CPU and 31x on the
     # GPU, so "auto" removes the CPU's accuracy/latency tradeoff.
     "stt_backend": "auto",
+    "voice_only_filter": True,  # reject non-voice mic windows before the model
     "refine_every": 6,  # utterances between block re-translations
     # --- app lifecycle (Milestone 0.5) ---
     "window_geometry": "",  # "WxH+X+Y", remembered between runs
@@ -1893,6 +1894,44 @@ def align_paragraphs(source: str, translation: str) -> List[tuple]:
     src += [""] * (n - len(src))
     trg += [""] * (n - len(trg))
     return list(zip(src, trg, strict=True))
+
+
+def format_speech_export(
+    transcript: str,
+    translation: str,
+    source: str = "Vietnamese",
+    target: str = "English",
+    fmt: str = "txt",
+) -> str:
+    """
+    Render a speech transcript and its translation as one saveable document.
+
+    Both are always included — the point of the export is to keep the Vietnamese
+    transcript alongside the English, so a later reader can check the source. In
+    Markdown the paragraphs are aligned side by side; in plain text the two sit
+    in clearly labelled sections.
+    """
+    transcript = (transcript or "").strip()
+    translation = (translation or "").strip()
+    if (fmt or "txt").lower() == "md":
+        pairs = align_paragraphs(transcript, translation)
+        lines = [f"| {source} | {target} |", "| --- | --- |"]
+        for src, trg in pairs:
+            lines.append(f"| {_md_cell(src)} | {_md_cell(trg)} |")
+        return "\n".join(lines) + "\n"
+    return (
+        f"{source} (transcription)\n"
+        f"{'=' * (len(source) + 16)}\n\n"
+        f"{transcript}\n\n\n"
+        f"{target} (translation)\n"
+        f"{'=' * (len(target) + 14)}\n\n"
+        f"{translation}\n"
+    )
+
+
+def _md_cell(text: str) -> str:
+    """Escape a paragraph for a Markdown table cell."""
+    return text.replace("|", "\\|").replace("\n", "<br>")
 
 
 # ---------------------------------------------------------------------------

@@ -75,6 +75,7 @@ time that model is asked for.
 | `dich/ui.py` | Tkinter app: Translate / Speech / Settings tabs |
 | `dich/backend.py` | text extraction, prompt strategies, cache, engine, contextual translation |
 | `dich/speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
+| `dich/voice_filter.py` | voice-only gate that rejects non-speech mic windows |
 | `dich/theme.py` | palette and shared widget styles |
 | `dich/VERSION` | single source of truth for the version |
 | `dich/config.json` | first-run seed; the live copy lives at `~/.config/dich` |
@@ -157,6 +158,12 @@ Measured on a 150s Vietnamese sample (22 utterances): the first pass produced
 it became 499 characters of coherent prose. The output gets *better*, not just
 longer.
 
+A file job shows its progress in two halves: decoding, then transcribing
+(`transcribe 42%`), then translating sentence by sentence (`translating 3/22`), so
+a long recording is never a blank bar. **Save…** writes the Vietnamese transcript
+and the English translation together — labelled sections in `.txt`, or a
+side-by-side table in `.md` — so the source can be checked next to the output.
+
 ## Microphone settings
 
 In Settings → Microphone:
@@ -165,6 +172,7 @@ In Settings → Microphone:
 |---|---|
 | **Input device** | Which microphone. *System default* follows macOS. |
 | **Speech model** | `tiny` → `large-v3-turbo`. Only runs while recording. |
+| **Voice-only filter** | Reject windows that are not speech (fans, keyboards, room tone) before the model sees them. |
 | **Refine every** | Utterances between block re-translations. |
 | **Transcription window** | Seconds of audio per transcription. |
 | **Buffer ceiling** | Seconds of audio held before the oldest is dropped. |
@@ -262,6 +270,16 @@ noise. Unhandled, feeding pure digital silence through this pipeline produced:
 Plus a peak-amplitude floor that skips quiet windows outright, and a marker
 filter that strips boilerplate found *inside* real speech, because Whisper
 splices it into genuine sentences rather than always emitting it separately.
+
+A **voice-only gate** (`dich/voice_filter.py`) now runs ahead of the model on the
+microphone. A window must look like a voice — most of its energy in the 300–3400
+Hz band, a low spectral flatness, a plausible zero-crossing rate, and a level
+above the room's own learned noise floor — or it is never transcribed. This is
+what stops a fan, a keyboard or plain room tone from becoming text, and it is the
+only such defence on the GPU path, where faster-whisper's `vad_filter` does not
+exist. A diacritic-free run of English function words is dropped as hallucinated
+English as well; written Vietnamese is diacritic-heavy, so real speech is not
+mistaken for it.
 
 The cost is that a genuinely spoken "cảm ơn các bạn" is dropped too. In this
 domain that phrase is overwhelmingly an artefact, so the trade is deliberate.

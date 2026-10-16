@@ -560,6 +560,7 @@ class DichApp:
         self._mic_opening = False
         self._memory_polling = False
         self._file_transcribing = False
+        self._file_translate_total = 0
         self._last_partial = ""
         # Push-to-talk state: held while the mouse button is down, started marks
         # a recording this button opened (so a release during the mic-open step
@@ -917,6 +918,9 @@ class DichApp:
             toolbar, "Refine", command=self.refine_speech, variant="ghost"
         ).pack(side="left", padx=(0, theme.SPACE_2))
         theme.RoundedButton(
+            toolbar, "Save…", command=self.save_speech, variant="ghost"
+        ).pack(side="left", padx=(0, theme.SPACE_2))
+        theme.RoundedButton(
             toolbar, "Clear", command=self.clear_speech, variant="ghost"
         ).pack(side="left", padx=(0, theme.SPACE_2))
 
@@ -1151,6 +1155,17 @@ class DichApp:
             text="Hold to Talk instead of always-on listening "
             "(mouse button on the Speech tab)",
             variable=self.push_to_talk_var,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
+        row += 1
+
+        self.voice_only_var = tk.BooleanVar(
+            value=bool(backend.CONFIG.get("voice_only_filter", True))
+        )
+        ttk.Checkbutton(
+            form,
+            text="Voice-only filter: ignore windows that are not speech "
+            "(fans, keyboards, room tone) so noise cannot become text",
+            variable=self.voice_only_var,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=theme.SPACE_1)
         row += 1
 
@@ -2043,6 +2058,7 @@ class DichApp:
 
         self.audio_path = Path(path)
         self._file_transcribing = True
+        self._file_translate_total = 0
         self.mic_status.configure(text="transcribing…")
         self.status.set_busy(
             "transcribing audio",
@@ -2090,6 +2106,7 @@ class DichApp:
             # otherwise a quiet file is indistinguishable from a broken one.
             self.mic_status.configure(text="no speech detected", foreground=YELLOW)
             self.transcript_pane.set("")
+            self._file_translate_total = 0
             self.status.set_stats("0 sentences", YELLOW)
             self.status.set_hint(
                 f"No speech found in {result.duration:.0f}s of audio. "
@@ -2101,6 +2118,9 @@ class DichApp:
         self.mic_status.configure(text=f"{count} sentences, {result.duration:.0f}s")
         self.transcript_pane.set("\n".join(result.sentences))
         self.status.set_stats("translating…")
+        # The translation is the second half of a file job: show how far through
+        # the sentences — and so the file — the translation has got.
+        self._file_translate_total = count
         # Feed the sentences in on the UI thread so the panes update live.
         self.root.after(0, lambda: self._stream_sentences(list(result.sentences)))
 
@@ -2116,13 +2136,21 @@ class DichApp:
             )
             return
         sentence = sentences.pop(0)
+        total = getattr(self, "_file_translate_total", 0)
 
         def done(_ignored=None):
             self.speech_translation_pane.set(self.translator.render_refined())
             stats = self.translator.stats()
-            self.status.set_stats(
-                f"{stats['refined']} refined · {stats['provisional']} provisional"
-            )
+            if total:
+                finished = total - len(sentences)
+                self.status.update(
+                    int(finished / total * 100),
+                    f"translating {finished}/{total} — {stats['refined']} refined",
+                )
+            else:
+                self.status.set_stats(
+                    f"{stats['refined']} refined · {stats['provisional']} provisional"
+                )
             if sentences:
                 self.root.after(0, lambda: self._stream_sentences(sentences))
             else:
@@ -2246,6 +2274,7 @@ class DichApp:
             archive_dir=(
                 str(backend.audio_archive_dir()) if self.archive_var.get() else None
             ),
+            voice_only_filter=bool(self.voice_only_var.get()),
             on_success=self._on_mic_started,
             on_error=self._on_mic_failed,
         )
@@ -2344,6 +2373,48 @@ class DichApp:
             self._stop_memory_poll()
         self.transcript_pane.set("")
         self.speech_translation_pane.set("")
+
+    def save_speech(self):
+        """Save the speech transcript and its translation together."""
+        transcript = self.transcript_pane.get().strip()
+        translation = (
+            self.speech_translation_pane.markdown_source()
+            or self.speech_translation_pane.get()
+        ).strip()
+        if not transcript and not translation:
+            messagebox.showwarning(
+                "Nothing to save", "Record or open some audio first."
+            )
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Save transcription and translation",
+            initialfile="dich-speech.txt",
+            defaultextension=".txt",
+            filetypes=[
+                ("Text files", "*.txt"),
+                ("Markdown (side by side)", "*.md"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        fmt = "md" if str(path).lower().endswith(".md") else "txt"
+        try:
+            document = backend.format_speech_export(
+                transcript,
+                translation,
+                source=backend.SOURCE_LANGUAGE,
+                target=backend.TARGET_LANGUAGE,
+                fmt=fmt,
+            )
+            Path(path).write_text(document, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - a save must not crash the app
+            self._show_error(
+                "Could not save the speech output", exc, traceback.format_exc()
+            )
+            return
+        self.status.set_hint(f"saved to {path}")
 
     def _render_speech(self):
         """
@@ -2466,6 +2537,7 @@ class DichApp:
                 "window_seconds": float(self.window_var.get()),
                 "buffer_max_seconds": int(self.buffer_var.get()),
                 "push_to_talk": bool(self.push_to_talk_var.get()),
+                "voice_only_filter": bool(self.voice_only_var.get()),
                 "combine_short_utterances": bool(self.combine_var.get()),
                 "ocr_enabled": bool(self.ocr_var.get()),
                 "archive_audio": bool(self.archive_var.get()),

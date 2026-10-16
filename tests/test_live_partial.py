@@ -34,8 +34,17 @@ def _engine(segments):
 
 
 def _window(seconds=4.0):
-    # Constant level so the trailing-silence rule cannot fire on its own.
-    return np.full(int(speech_engine.SAMPLE_RATE * seconds), 0.5, dtype=np.float32)
+    # A voice-band harmonic stack with a constant envelope: the voice gate
+    # accepts it as speech, and the flat level means the trailing-silence rule
+    # cannot fire on its own.
+    n = int(speech_engine.SAMPLE_RATE * seconds)
+    t = np.arange(n) / speech_engine.SAMPLE_RATE
+    tone = (
+        0.3 * np.sin(2 * np.pi * 400 * t)
+        + 0.2 * np.sin(2 * np.pi * 800 * t)
+        + 0.1 * np.sin(2 * np.pi * 1600 * t)
+    )
+    return tone.astype(np.float32)
 
 
 def test_partial_is_the_sentence_still_being_assembled():

@@ -231,6 +231,30 @@ def test_second_file_open_refused_while_busy(monkeypatch):
     assert events == [("hint", "a file is already being transcribed")]
 
 
+def test_file_translation_reports_sentence_progress():
+    """The translation half of a file job shows how far through it is."""
+    events = []
+    app = SimpleNamespace(
+        _file_translate_total=4,
+        status=SimpleNamespace(
+            update=lambda pct, stats: events.append(("progress", pct, stats)),
+            set_stats=lambda *a, **k: events.append(("stats", a)),
+        ),
+        speech_translation_pane=SimpleNamespace(set=lambda t: None),
+        translator=SimpleNamespace(
+            render_refined=lambda: "EN",
+            stats=lambda: {"refined": 1, "provisional": 0},
+            add=lambda s: "EN",
+        ),
+        worker=SimpleNamespace(run=lambda fn, *a, **kw: kw["on_success"]("EN")),
+        root=SimpleNamespace(after=lambda d, fn: None),
+    )
+
+    ui.DichApp._stream_sentences(app, ["câu 1", "câu 2", "câu 3", "câu 4"])
+
+    assert events[0] == ("progress", 25, "translating 1/4 — 1 refined")
+
+
 def test_file_error_names_the_failure_as_transcription():
     """Not "translation failed": the job that failed was the file transcription."""
     events = []

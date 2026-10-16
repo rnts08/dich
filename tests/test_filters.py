@@ -54,3 +54,31 @@ def test_no_samples_yet_are_not_silence():
 def test_uniform_audio_is_not_trailing_silence():
     eng = speech_engine.SpeechEngine()
     assert not eng._trailing_silence(np.ones(32000, dtype=np.float32) * 0.3)
+
+
+# -- hallucinated English --------------------------------------------------
+# Whisper invents English on noise, and the marker list names only some of it.
+def test_a_run_of_english_function_words_is_flagged():
+    assert speech_engine._is_hallucination("and i think that you should be here now")
+
+
+def test_real_vietnamese_is_never_flagged_as_english():
+    assert not speech_engine._is_hallucination(
+        "Xin chào các bạn, hôm nay trời rất đẹp và mát mẻ."
+    )
+
+
+def test_diacritic_free_vietnamese_is_not_flagged():
+    # No diacritics, but none of these are English function words either.
+    assert not speech_engine._is_hallucination("toi muon di cho an com")
+
+
+def test_short_english_is_left_alone():
+    # Too few words to judge: do not drop an interjection that might be real.
+    assert not speech_engine._is_hallucination("ok")
+    assert not speech_engine._is_hallucination("yes fine")
+
+
+def test_english_spliced_into_speech_is_trimmed():
+    text = "Tôi đi chợ. and i think that you should be here now"
+    assert speech_engine._strip_hallucinations(text) == "Tôi đi chợ."

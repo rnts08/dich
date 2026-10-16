@@ -125,13 +125,19 @@ class MLXWhisper:
         handed a quiet buffer.
         """
         model = self._loaded()
-        out = model.generate(
-            audio,
-            language=language or DEFAULT_LANGUAGE,
-            condition_on_previous_text=bool(
+        options = {
+            "language": language or DEFAULT_LANGUAGE,
+            "condition_on_previous_text": bool(
                 kwargs.get("condition_on_previous_text", False)
             ),
-        )
+        }
+        # Forward the caller's silence threshold when it names one, so the model
+        # itself can drop no-speech segments instead of only relying on the
+        # engine's own guard.
+        no_speech = kwargs.get("no_speech_threshold")
+        if no_speech is not None:
+            options["no_speech_threshold"] = float(no_speech)
+        out = model.generate(audio, **options)
         segments = [
             Segment(
                 text=str(s.get("text", "")).strip(),

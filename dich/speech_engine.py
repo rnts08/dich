@@ -34,6 +34,8 @@ from typing import Callable, Iterator, List, Optional
 
 import numpy as np
 
+from .voice_filter import VoiceGate
+
 # faster-whisper downloads through huggingface_hub, which reads these once at
 # import time. backend.py sets them too, but this module can be imported on its
 # own, and pointing them at ~/.config/dich/models is what keeps a fresh install
@@ -92,6 +94,11 @@ SILENCE_FLOOR = 0.003
 # it because faster-whisper's vad_filter removed those windows; the GPU path
 # has no such filter, so the file path must drop them itself.)
 NO_SPEECH_THRESHOLD = 0.6
+# Consecutive non-voice windows (noise or silence) that end a hanging utterance.
+# Two, not one: a single false negative from the voice gate must not cut a
+# sentence short, and the in-window trailing-silence rule still fires first when
+# a phrase really does finish inside a voiced window.
+MIN_QUIET_WINDOWS = 2
 # Batch/file transcription favours accuracy; live mic keeps up with a speaker.
 FILE_MODEL = "large-v3-turbo"
 LIVE_MODEL = "small"
@@ -149,10 +156,18 @@ class SpeechEngine:
         device_index: Optional[int] = None,
         window_seconds: float = WINDOW_SECONDS,
         buffer_max_seconds: float = BUFFER_MAX_SECONDS,
+        voice_only_filter: bool = True,
     ):
         self.model_size = model_size
         self.device_index = device_index
         self.window_seconds = max(0.5, float(window_seconds))
+        # The voice gate rejects windows that are not speech (fans, keyboards,
+        # room tone) before they reach the model, which is where noise becomes
+        # hallucinated text. Off, every window above the energy floor goes
+        # through.
+        self.voice_only_filter = bool(voice_only_filter)
+        self._voice_gate = VoiceGate() if self.voice_only_filter else None
+        self._quiet_windows = 0
         # The cap stops a transcriber that cannot keep up from growing the
         # buffer without limit, while leaving enough audio to catch up after a
         # pause. 600s of mono float32 is roughly 38 MB; the ceiling here allows
@@ -379,13 +394,24 @@ class SpeechEngine:
         if samples.size == 0:
             return
         if float(np.abs(samples).max()) < SILENCE_FLOOR:
-            return  # effectively quiet; do not let the model invent text
+            # Effectively quiet; do not let the model invent text. A quiet
+            # window also ends whatever utterance was hanging.
+            self._quiet_window()
+            return
+        if self._voice_gate is not None and not self._voice_gate.is_voice(samples):
+            # A fan, a keyboard, a TV, room tone — not a voice. Handing any of
+            # these to the model is exactly how noise turns into hallucinated
+            # text, and on the GPU path there is no vad_filter to catch it.
+            self._quiet_window()
+            return
+        self._quiet_windows = 0
         try:
             segments, _info = self._model.transcribe(
                 samples,
                 language="vi",
                 beam_size=5,
                 vad_filter=True,  # drop non-speech
+                no_speech_threshold=NO_SPEECH_THRESHOLD,
                 condition_on_previous_text=False,  # no hallucination feedback
             )
         except Exception as e:  # noqa: BLE001 - a failed window must not kill capture
@@ -405,9 +431,13 @@ class SpeechEngine:
         """
         for seg in segments:
             text = _strip_hallucinations(seg.text.strip())
+            # A segment the model itself flags as non-speech is a silence
+            # artefact, not speech that happens to be quiet. The file path has
+            # always dropped these; the live path must too.
+            no_speech = float(getattr(seg, "no_speech_prob", 0.0) or 0.0)
             # A repeated phrase is Whisper's other silence artefact, and the
             # marker list cannot catch it because the phrase itself is real.
-            if not text or _is_repetition(text):
+            if not text or no_speech >= NO_SPEECH_THRESHOLD or _is_repetition(text):
                 continue
             self._pending = f"{self._pending} {text}".strip()
             self._pending_segments += 1
@@ -474,6 +504,19 @@ class SpeechEngine:
         self._final.put(cleaned)
         self._pending_segments = 0
 
+    def _quiet_window(self):
+        """
+        Note a run of non-voice windows and close a hanging utterance.
+
+        Called for every silence-floor or voice-gate rejection. A single quiet
+        window is not enough to flush, so one false negative cannot truncate a
+        sentence; two in a row is a confirmed pause.
+        """
+        self._quiet_windows += 1
+        if self._pending and self._quiet_windows >= MIN_QUIET_WINDOWS:
+            self._emit(self._pending)
+            self._pending = ""
+
     def _flush_pending(self):
         if self._pending.strip():
             self._emit(self._pending)
@@ -536,7 +579,50 @@ _HALLUCINATION_MARKERS = (
 def _is_hallucination(text: str) -> bool:
     """True when the whole string is a decoding artefact."""
     lowered = text.lower()
-    return any(marker in lowered for marker in _HALLUCINATION_MARKERS)
+    if any(marker in lowered for marker in _HALLUCINATION_MARKERS):
+        return True
+    return _looks_like_english(lowered)
+
+
+# Vietnamese letters that never appear in English. Their presence is enough to
+# declare a segment genuine Vietnamese text.
+_VIETNAMESE_CHARS = frozenset(
+    "ăâđêôơưàảãáạằẳẵắặầẩẫấậèẻẽéẹềểễếệìỉĩíịòỏõóọồổỗốộờởỡớợùủũúụừửữứựỳỷỹýỵ"
+)
+
+# English function words. A Vietnamese microphone should not be producing runs
+# of these, so a diacritic-free segment that is mostly them is hallucinated
+# English, not code-switching.
+_ENGLISH_STOPWORDS = frozenset(
+    """
+    the a an and or but to of in on at for with from by is are was were be been
+    am do does did you your yours we our ours they their them i me my mine he she
+    it its this that these those have has had will would can could should shall
+    may might must not no if then than so as what when where who whom which how
+    why there here now just like very more most much many one two three all any
+    some each every other another such only own same too also please thank thanks
+    subscribe watching video
+    """.split()
+)
+
+
+def _looks_like_english(text: str) -> bool:
+    """
+    True when a diacritic-free segment reads as English boilerplate.
+
+    Whisper's silence artefacts are usually English, and the marker list cannot
+    name every one of them. Written Vietnamese is diacritic-heavy, so a run with
+    no Vietnamese letters at all that is mostly English function words is a
+    decoding artefact rather than speech. Short interjections ("ok", "fine") are
+    left alone — there are not enough words to judge.
+    """
+    if any(ch in _VIETNAMESE_CHARS for ch in text):
+        return False
+    words = re.findall(r"[a-z']+", text)
+    if len(words) < 3:
+        return False
+    hits = sum(1 for word in words if word in _ENGLISH_STOPWORDS)
+    return hits >= 3 and hits * 2 >= len(words)
 
 
 def _is_repetition(text: str) -> bool:
@@ -656,6 +742,7 @@ def start_mic_stream(
     window_seconds: Optional[float] = None,
     buffer_max_seconds: float = BUFFER_MAX_SECONDS,
     archive_dir: Optional[str] = None,
+    voice_only_filter: bool = True,
 ) -> SpeechEngine:
     """
     Open the microphone and begin transcribing.
@@ -670,6 +757,8 @@ def start_mic_stream(
         buffer_max_seconds: Audio to hold before the oldest is dropped.
         archive_dir: When set, raw microphone input is saved as WAV files here
             for later re-transcription or refinement.
+        voice_only_filter: Reject windows that are not voice (noise, room tone)
+            before they reach the model, so they cannot become hallucinations.
     """
     global _engine
     if _engine is None:
@@ -680,6 +769,7 @@ def start_mic_stream(
                 default_window_seconds() if window_seconds is None else window_seconds
             ),
             buffer_max_seconds=buffer_max_seconds,
+            voice_only_filter=voice_only_filter,
         )
     if getattr(_engine, "_stream", None) is None:
         if archive_dir is not None:
@@ -946,6 +1036,7 @@ def transcribe_file(
         language="vi",
         beam_size=5,
         vad_filter=True,  # skip silence instead of noise
+        no_speech_threshold=NO_SPEECH_THRESHOLD,
         condition_on_previous_text=True,  # carry context across sentences
     )
 

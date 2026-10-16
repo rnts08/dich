@@ -9,6 +9,7 @@
   "mic_device_index": 0,
   "mic_model": "small",
   "stt_backend": "auto",
+  "voice_only_filter": true,
   "refine_every": 6,
   "window_geometry": "",
   "recent_files": [],
