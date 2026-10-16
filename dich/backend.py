@@ -125,6 +125,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # --- microphone archive (0.2.5) -------------------------------------
     "archive_audio": False,  # save raw mic input for later re-transcription
     "audio_archive_path": "",  # defaults to <config>/audio when empty
+    "last_document": "",  # path reopened on launch
 }
 
 

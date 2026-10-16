@@ -1800,7 +1800,7 @@ class DichApp:
         entry = str(path)
         recent = [p for p in backend.CONFIG.get("recent_files", []) if p and p != entry]
         recent.insert(0, entry)
-        self._save_config_fields({"recent_files": recent[:8]})
+        self._save_config_fields({"recent_files": recent[:8], "last_document": entry})
         self._rebuild_recent_menu()
 
     def _forget_recent(self, path: str):
@@ -2583,7 +2583,14 @@ def main():
     backend.init_config()
     root = tk.Tk()
     # __init__ wires WM_DELETE_WINDOW to _on_close (stop mic, then destroy).
-    DichApp(root)
+    app = DichApp(root)
+
+    # Resume the last document on launch, if it still exists. Deferred to
+    # idle so the window is shown before the file is read.
+    last = str(backend.CONFIG.get("last_document") or "").strip()
+    if last:
+        root.after(0, lambda: app._load_document(Path(last)))
+
     root.mainloop()
 
     # The semaphore tracker warns at shutdown about objects leaked by the audio
