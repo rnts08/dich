@@ -77,13 +77,14 @@ time that model is asked for.
 | `dich/speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
 | `dich/voice_filter.py` | voice-only gate that rejects non-speech mic windows |
 | `dich/audio_filter.py` | speech-band front-end: drops hum/rumble/hiss before the gate |
-| `dich/cleanup.py` | rule-based removal of stutters, repetitions and filler sounds |
+| `dich/cleanup.py` | rule-based removal of stutters, repeats, loops and filler sounds |
 | `dich/llm.py` | optional OpenAI-compatible rewrite endpoint |
 | `dich/theme.py` | palette and shared widget styles |
 | `dich/VERSION` | single source of truth for the version |
 | `dich/config.json` | first-run seed; the live copy lives at `~/.config/dich` |
 | `dev/bump_version.py` | bumps patch/minor, commits, and tags |
 | `dev/regen_goldens.py` | regenerates the golden translation files |
+| `dev/cleanup_report.py` | before/after of the cleaner over a folder of real transcripts |
 | `ruff.toml` | lint + format rules (ruff) |
 | `.githooks/pre-commit` | local gate: ruff check, format check, fast test suite |
 | `tests/` | pytest suite: unit, Tk, and `model`-marked golden tests |
@@ -175,14 +176,28 @@ Whisper transcribes them faithfully, and they then get translated faithfully.
 
 **Clean up** strips them with plain rules — no model, no network, so it is
 instant and works offline. It removes whole-word hesitations, isolated
-interjections wedged between pauses, and exact immediate repetitions, while
-leaving Vietnamese reduplication ("người người", "ngày ngày") and anything
-separated by punctuation alone. The cleaned transcript is then re-translated, so
-both panes reflect it. **Settings → Microphone → “Remove stutters, repeated
-words and filler sounds”** does the same automatically as utterances arrive.
+interjections wedged between pauses, and repetitions at two levels: an immediate
+run of words inside a line, and a whole line that repeats the one above it. The
+second is the one that matters most on real meeting audio, where Whisper
+sometimes gets stuck and emits the same short phrase over and over, one segment
+per line — a lecture recording here produced "Tuy nhiên là" twenty times in a
+row. Vietnamese reduplication that is a real word ("người người", "ngày ngày",
+"từ từ", "chung chung") is always left alone, as is a repeat held apart by a
+comma ("cảm ơn, cảm ơn") until it happens a third time. The cleaned transcript is
+then re-translated, so both panes reflect it. **Settings → Microphone → “Remove
+stutters, repeated words and filler sounds”** does the same automatically as
+utterances arrive.
 
 The one thing rules cannot resolve is a false start that only makes sense with
 the sentence around it; the external-LLM rewrite below handles that.
+
+`dev/cleanup_report.py` runs the cleaner over a folder of real transcripts and
+shows the before/after per file, so a rule change can be checked against real
+recordings instead of a hunch:
+
+```bash
+.venv/bin/python3 dev/cleanup_report.py real-world-data
+```
 
 ### Rewriting with an external LLM
 
