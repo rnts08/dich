@@ -1,13 +1,26 @@
 Dịch — Non-Commercial Licence Agreement
-Copyright © 2026 Tim Bergström
+Copyright © 2026 Timh Bergström
 Home: https://github.com/rnts08/dich
+
+0. Support development
+
+Support project development and the creator, reach out for other ways to contribute.
+
+- EVM: 0x6e8e3c2b31424266e7cff59e910df1587c317427 (ERC-20, BEP-20, TRC-20, AVAX-C, SPL, MATIC, POL, ARB, BASE, TON)
+- BTC: bc1qzzvcguvqjc6qhwe2y5vy38w2zke7hksukjhm68
+- LTC: MPfm5QLKH1r9XxgWmH75Gyps4LDfX5c53L
+- SOL: GEaCMpnyM8tB5BU4RMuLm6tgMr3q9FgMHodxDxxAGby
+
+Buy me a coffee: https://buymeacoffee.com/timhbergsta or support me on ko-fi: https://ko-fi.com/rnts08
+
+Donators and supporters gets honored in the application, unless specifically requested to be anonymous.
 
 1. Definitions
 
 "Software" means the Dịch source code, binaries and accompanying files in this
 repository.
 
-"Licensor" means Tim Bergström.
+"Licensor" means Timh Bergström.
 
 "Non-Commercial Use" means use that is not intended for, or directed towards,
 commercial advantage or monetary compensation.
@@ -68,5 +81,5 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 8. Governing law
 
-This agreement is governed by the laws of Sweden, without regard to conflict of
+This agreement is governed by the laws of Liberland, without regard to conflict of
 law rules.
