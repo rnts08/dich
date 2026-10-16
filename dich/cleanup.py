@@ -11,10 +11,11 @@ speaker meant it to.
 
 The single biggest real-world artefact is not a stutter but a **loop**: on
 meeting-room audio Whisper sometimes gets stuck and emits the same short phrase
-over and over, one segment per line ("Tuy nhiên là" twenty times, "Thì anh" nine
-times, a company name a dozen times). Real recordings make this plain, so the
-repeat rule works on two levels: an immediate run of words repeats inside a line,
-and a whole line repeats the one directly above it.
+over and over ("Tuy nhiên là" twenty times, "Thì anh" nine times, a company name
+a dozen times). Real recordings make this plain, so the repeat rule works on
+three levels: an immediate run of words repeats inside a line, a whole line
+repeats the one directly above it, and a short line recurs with a different
+fragment wedged between copies (the last is the same loop, just not consecutive).
 
 The rules are deliberately conservative. A word is removed only when it is a
 known hesitation sound or an exact immediate repetition, and Vietnamese
@@ -108,6 +109,13 @@ _WORD = re.compile(r"\w+", re.UNICODE)
 # Whisper loop repeats a short phrase ("thế nên cái lúc này"). Ten covers every
 # loop seen in real meeting audio without scanning whole paragraphs per word.
 MAX_REPEAT_BLOCK = 10
+
+# A line loop that is not consecutive: the model repeats a short phrase with a
+# different fragment wedged between each copy. Only lines this short, recurring
+# this often within this many lines, are treated as the same loop.
+LOOP_WINDOW = 8
+LOOP_MIN_REPEATS = 3
+LOOP_MAX_WORDS = 4
 
 # Punctuation that may cling to a word. Stripped before two words are compared,
 # so "vô," and "vô" are the same word; kept when the word is emitted.
@@ -208,20 +216,33 @@ def _collapse_repetitions(text: str) -> str:
 
 def _dedupe_consecutive_lines(lines: list) -> list:
     """
-    Drop a line that repeats the one directly above it.
+    Collapse a repeated line, consecutive or interleaved with short fragments.
 
-    This is where a Whisper loop is actually undone: the model emits the same
-    short phrase segment after segment, one per line ("Vtp", "Vtp", "Vtp"). Runs
-    of identical lines collapse to one; a phrase that recurs later in the
-    transcript, where it may be deliberate, is left alone. Blank lines are kept
-    and break the run, so paragraph structure survives.
+    This is where a Whisper loop is undone. Two shapes appear in real audio:
+
+      * **Consecutive** — the same phrase segment after segment, one per line
+        ("Vtp", "Vtp", "Vtp"). Always collapsed to one.
+      * **Interleaved** — the model gets stuck on a short phrase but keeps
+        emitting a different fragment between copies ("Tuy nhiên là", "Phải
+        bán", "Tuy nhiên là", "Thấy", "Tuy nhiên là"). Consecutive matching never
+        fires here. A short line (up to `LOOP_MAX_WORDS`) that already appears
+        `LOOP_MIN_REPEATS - 1` times in the previous `LOOP_WINDOW` lines is
+        treated as part of the loop and dropped; a longer line, or a phrase that
+        only recurs now and then, is left alone, because it may be deliberate.
+
+    Blank lines are kept and break a run, so paragraph structure survives.
     """
     out: list = []
     previous = ""
     for line in lines:
         key = line.strip().casefold()
-        if key and key == previous:
-            continue
+        if key:
+            if key == previous:
+                continue
+            if len(key.split()) <= LOOP_MAX_WORDS:
+                recent = [kept.strip().casefold() for kept in out[-LOOP_WINDOW:]]
+                if recent.count(key) >= LOOP_MIN_REPEATS - 1:
+                    continue
         out.append(line)
         previous = key
     return out

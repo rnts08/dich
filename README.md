@@ -85,6 +85,7 @@ time that model is asked for.
 | `dev/bump_version.py` | bumps patch/minor, commits, and tags |
 | `dev/regen_goldens.py` | regenerates the golden translation files |
 | `dev/cleanup_report.py` | before/after of the cleaner over a folder of real transcripts |
+| `dev/pipeline_report.py` | the whole path (cleanup → translation) over real transcripts |
 | `ruff.toml` | lint + format rules (ruff) |
 | `.githooks/pre-commit` | local gate: ruff check, format check, fast test suite |
 | `tests/` | pytest suite: unit, Tk, and `model`-marked golden tests |
@@ -176,17 +177,20 @@ Whisper transcribes them faithfully, and they then get translated faithfully.
 
 **Clean up** strips them with plain rules — no model, no network, so it is
 instant and works offline. It removes whole-word hesitations, isolated
-interjections wedged between pauses, and repetitions at two levels: an immediate
-run of words inside a line, and a whole line that repeats the one above it. The
-second is the one that matters most on real meeting audio, where Whisper
-sometimes gets stuck and emits the same short phrase over and over, one segment
-per line — a lecture recording here produced "Tuy nhiên là" twenty times in a
+interjections wedged between pauses, and repetitions at three levels: an
+immediate run of words inside a line, a whole line that repeats the one above it,
+and a short line that keeps coming back with a different fragment wedged between
+each copy. The line-level rules are the ones that matter most on real meeting
+audio, where Whisper sometimes gets stuck and emits the same short phrase over
+and over — a lecture recording here produced "Tuy nhiên là" twenty times in a
 row. Vietnamese reduplication that is a real word ("người người", "ngày ngày",
 "từ từ", "chung chung") is always left alone, as is a repeat held apart by a
-comma ("cảm ơn, cảm ơn") until it happens a third time. The cleaned transcript is
-then re-translated, so both panes reflect it. **Settings → Microphone → “Remove
-stutters, repeated words and filler sounds”** does the same automatically as
-utterances arrive.
+comma ("cảm ơn, cảm ơn") until it happens a third time. Dropping a short line
+that recurs three times within eight lines is a deliberate trade: a speaker who
+genuinely says "đúng" that often loses two of the three, but a loop loses its
+noise. The cleaned transcript is then re-translated, so both panes reflect it.
+**Settings → Microphone → “Remove stutters, repeated words and filler sounds”**
+does the same automatically as utterances arrive.
 
 The one thing rules cannot resolve is a false start that only makes sense with
 the sentence around it; the external-LLM rewrite below handles that.
@@ -197,6 +201,14 @@ recordings instead of a hunch:
 
 ```bash
 .venv/bin/python3 dev/cleanup_report.py real-world-data
+```
+
+`dev/pipeline_report.py` goes one step further and runs the whole path — cleanup
+then the contextual translator — so the cleaned Vietnamese and the English it
+produces can be read next to the human interpretation:
+
+```bash
+HF_HUB_OFFLINE=1 .venv/bin/python3 dev/pipeline_report.py real-world-data
 ```
 
 ### Rewriting with an external LLM

@@ -116,6 +116,26 @@ def test_a_repeat_that_is_not_adjacent_survives():
     assert cleanup.cleanup("hai ngày\nvà rồi\nhai ngày") == "hai ngày\nvà rồi\nhai ngày"
 
 
+def test_an_interleaved_loop_collapses():
+    # The stuck phrase comes back with a different short fragment wedged between
+    # each copy, so consecutive matching never fires.
+    text = "Tuy nhiên là\nPhải bán\nTuy nhiên là\nThấy\nTuy nhiên là\nCũng là\nTuy nhiên là"
+    assert (
+        cleanup.cleanup(text) == "Tuy nhiên là\nPhải bán\nTuy nhiên là\nThấy\nCũng là"
+    )
+
+
+def test_a_long_line_recurring_is_not_treated_as_a_loop():
+    # Only short lines are loop material; a real sentence that comes back is kept.
+    line = "chúng ta cần bán được hai mươi căn hộ trong tháng này"
+    text = "\n".join([line, "vâng", line, "đúng rồi", line])
+    assert cleanup.cleanup(text) == text
+
+
+def test_a_short_line_used_only_twice_survives():
+    assert cleanup.cleanup("vâng\nkết thúc\nvâng") == "vâng\nkết thúc\nvâng"
+
+
 def test_a_phrase_repeated_thrice_through_commas_collapses():
     # Three verbatim copies is a loop, even when commas separate them.
     assert cleanup.cleanup("1 có thể vô, 1 có thể vô, 1 có thể vô") == "1 có thể vô"
