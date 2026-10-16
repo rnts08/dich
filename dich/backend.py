@@ -1879,6 +1879,22 @@ def _split_translation(text: str, expected: int) -> List[str]:
     return lines + [""] * (expected - len(lines))
 
 
+def align_paragraphs(source: str, translation: str) -> List[tuple]:
+    """
+    Pair source and translation paragraphs side by side.
+
+    Splits both on blank lines and pairs them by index. When one side has more
+    paragraphs than the other, the missing side is padded with an empty string,
+    so every source paragraph has a translation slot and vice versa.
+    """
+    src = [p.strip() for p in source.split("\n\n") if p.strip()]
+    trg = [p.strip() for p in translation.split("\n\n") if p.strip()]
+    n = max(len(src), len(trg))
+    src += [""] * (n - len(src))
+    trg += [""] * (n - len(trg))
+    return list(zip(src, trg, strict=True))
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------

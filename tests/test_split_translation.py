@@ -17,3 +17,19 @@ def test_surplus_folds_into_the_last_line(backend):
 def test_deficit_pads_with_empty(backend):
     # A short result leaves later utterances provisional, not hallucinated.
     assert backend._split_translation("a", 3) == ["a", "", ""]
+
+
+def test_align_paragraphs_pairs_by_index(backend):
+    pairs = backend.align_paragraphs("A1\n\nA2", "B1\n\nB2")
+    assert pairs == [("A1", "B1"), ("A2", "B2")]
+
+
+def test_align_paragraphs_pads_shorter_side(backend):
+    pairs = backend.align_paragraphs("A1\n\nA2\n\nA3", "B1")
+    assert pairs == [("A1", "B1"), ("A2", ""), ("A3", "")]
+
+
+def test_align_paragraphs_handles_empty_sides(backend):
+    assert backend.align_paragraphs("", "") == []
+    assert backend.align_paragraphs("A1", "") == [("A1", "")]
+    assert backend.align_paragraphs("", "B1") == [("", "B1")]

@@ -783,6 +783,7 @@ class DichApp:
         )
 
         self._build_translate_tab(self.notebook)
+        self._build_side_by_side_tab(self.notebook)
         self._build_speech_tab(self.notebook)
         self._build_settings_tab(self.notebook)
 
@@ -808,6 +809,13 @@ class DichApp:
         theme.RoundedButton(
             toolbar, "Save…", command=self.save_translation, variant="ghost"
         ).pack(side="left")
+        theme.RoundedButton(
+            toolbar,
+            "Side by side",
+            command=self.show_side_by_side,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).pack(side="left", padx=(theme.SPACE_3, 0))
 
         self.cache_label = ttk.Label(
             toolbar, text="", style="Faint.TLabel", foreground=GREEN
@@ -839,6 +847,54 @@ class DichApp:
             markdown=True,
         )
         self.target_pane.grid(row=0, column=1, sticky="nsew", padx=(theme.SPACE_3, 0))
+
+    def _build_side_by_side_tab(self, notebook: ttk.Notebook):
+        tab = ttk.Frame(notebook)
+        notebook.add(tab, text="Side by Side")
+
+        toolbar = tk.Frame(tab, bg=BG)
+        toolbar.pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_3)
+        theme.RoundedButton(
+            toolbar,
+            "Refresh alignment",
+            command=self._refresh_side_by_side,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).pack(side="left")
+        ttk.Label(
+            toolbar,
+            text="Source paragraphs on the left, translation on the right.",
+            style="Faint.TLabel",
+        ).pack(side="right")
+
+        body = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        body.pack(fill="both", expand=True, padx=theme.SPACE_3, pady=(0, theme.SPACE_3))
+
+        self.sbs_source = TextPane(
+            body,
+            f"Source — {backend.SOURCE_LANGUAGE}",
+            editable=False,
+            markdown=False,
+        )
+        self.sbs_target = TextPane(
+            body,
+            f"Translation — {backend.TARGET_LANGUAGE}",
+            editable=False,
+            markdown=False,
+        )
+        body.add(self.sbs_source, weight=1)
+        body.add(self.sbs_target, weight=1)
+
+    def show_side_by_side(self):
+        """Switch to the side-by-side view and align the current text."""
+        self._refresh_side_by_side()
+        self.notebook.select(1)  # side-by-side tab sits right after Translate
+
+    def _refresh_side_by_side(self):
+        """Re-align the current source and translation paragraph by paragraph."""
+        pairs = backend.align_paragraphs(self.source_pane.get(), self.target_pane.get())
+        self.sbs_source.set("\n\n".join(s for s, _ in pairs))
+        self.sbs_target.set("\n\n".join(t for _, t in pairs))
 
     def _build_speech_tab(self, notebook: ttk.Notebook):
         tab = ttk.Frame(notebook)
