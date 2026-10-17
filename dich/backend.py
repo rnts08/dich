@@ -1187,31 +1187,39 @@ class LocalEngine:
         _, tokenizer = self.load()
         return len(tokenizer.encode(text))
 
-    def run(self, chunk: str, max_tokens: int):
+    def run(self, chunk: str, max_tokens: int, on_token=None):
         """Translate one chunk and return the text plus its token count."""
-        return self.run_messages(self.build_messages(chunk), max_tokens)
+        return self.run_messages(self.build_messages(chunk), max_tokens, on_token)
 
-    def run_messages(self, messages: list, max_tokens: int):
+    def run_messages(self, messages: list, max_tokens: int, on_token=None):
         """
         Translate a prepared message list and return (text, token count).
 
         Accepting pre-built messages lets a caller supply prior conversation
         turns as context instead of a single isolated paragraph.
+
+        `on_token` receives each generated text delta as it is produced, so a
+        caller can show the translation while it is still being written. The
+        returned text is identical either way; only the delivery differs.
         """
-        from mlx_lm import generate as mlx_generate
+        from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
         model, tokenizer = self.load()
         prompt = self.render_prompt(messages)
-        raw = mlx_generate(
+        parts: List[str] = []
+        for response in stream_generate(
             model,
             tokenizer,
             prompt=prompt,
             max_tokens=max_tokens,
             sampler=make_sampler(temp=0.0),  # greedy: translation must be stable
-            verbose=False,
-        )
-        text = _trim_stop_tokens(raw)
+        ):
+            if response.text:
+                parts.append(response.text)
+                if on_token is not None:
+                    on_token(response.text)
+        text = _trim_stop_tokens("".join(parts))
         return text, self.count_tokens(text)
 
     def run_block(self, text: str, model: Optional[str] = None):
@@ -1283,12 +1291,27 @@ def _translate_chunks(
     engine: "LocalEngine",
     on_progress: Optional[Callable[[Progress], None]],
     progress: Progress,
+    on_token=None,
 ) -> List[str]:
-    """Translate every chunk with one model, reporting progress as it goes."""
+    """
+    Translate every chunk with one model, reporting progress as it goes.
+
+    `on_token` receives each generated delta while a chunk is being written.
+    Between chunks it receives the same separator the joined result uses, so
+    a streaming client assembles exactly the text a non-streaming run would
+    return. It never receives anything for a single-chunk run beyond the
+    chunk's own text.
+    """
     translated: List[str] = []
     for i, chunk in enumerate(chunks):
         chunk_started = time.time()
-        text, tokens = engine.run(chunk, max_tokens=max(512, min(8192, len(chunk) * 3)))
+        text, tokens = engine.run(
+            chunk,
+            max_tokens=max(512, min(8192, len(chunk) * 3)),
+            on_token=on_token,
+        )
+        if on_token is not None and len(chunks) > 1 and not text.endswith("\n"):
+            on_token("\n")
         chunk_seconds = max(time.time() - chunk_started, 1e-6)
 
         translated.append(text)
@@ -1311,6 +1334,7 @@ def translate_text(
     model: Optional[str] = None,
     on_progress: Optional[Callable[[Progress], None]] = None,
     use_cache: bool = True,
+    on_token=None,
 ) -> TranslationResult:
     """
     Translate text from the configured source language to the target language.
@@ -1320,6 +1344,10 @@ def translate_text(
         model: Optional model override. Defaults to the configured model.
         on_progress: Called with a Progress snapshot as batches complete.
         use_cache: Return a stored translation when the input is unchanged.
+        on_token: Called from the translation thread with each generated text
+            delta as it is produced, or with `None` when a new attempt starts
+            (a fallback model retry), so a streaming client can clear what it
+            has. It is never called for a cache hit.
 
     Returns:
         TranslationResult with the translated text plus timing/counter stats.
@@ -1345,6 +1373,8 @@ def translate_text(
         )
     if on_progress is not None and not callable(on_progress):
         raise TypeError("on_progress must be callable; use on_progress=fn.")
+    if on_token is not None and not callable(on_token):
+        raise TypeError("on_token must be callable or None.")
 
     # Already translated this exact input? Skip the model entirely.
     if use_cache:
@@ -1376,6 +1406,10 @@ def translate_text(
         )
         if on_progress:
             on_progress(progress)
+        if on_token:
+            # A previous attempt in the chain may have streamed text already;
+            # None tells the client this attempt is starting from scratch.
+            on_token(None)
 
         try:
             logger.info(
@@ -1383,7 +1417,9 @@ def translate_text(
                 f"{len(chunks)} batch(es), limit={profile['batch_char_limit']} chars)"
             )
             engine = get_engine(current)
-            translated = _translate_chunks(chunks, engine, on_progress, progress)
+            translated = _translate_chunks(
+                chunks, engine, on_progress, progress, on_token
+            )
         except Exception as e:  # noqa: BLE001 - try the fallback model, then report
             last_error = e
             logger.warning(

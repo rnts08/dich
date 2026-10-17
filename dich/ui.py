@@ -407,6 +407,28 @@ class TextPane(ttk.Frame):
             self.text.configure(state="disabled")
         self._has_placeholder = False
 
+    # -- streaming --------------------------------------------------------
+    def stream_reset(self):
+        """Clear the pane because a new streaming attempt is starting."""
+        self._markdown_source = ""
+        self.text.configure(state="normal")
+        self.text.delete("1.0", tk.END)
+        if not self.editable:
+            self.text.configure(state="disabled")
+        self._has_placeholder = False
+
+    def stream_append(self, delta: str):
+        """
+        Append one streamed delta of raw Markdown source.
+
+        The text appears as it is generated, unrendered; set() re-renders the
+        finished translation when the run completes, so streaming never
+        changes what a completed translation looks like. The Markdown source
+        is kept current, so Save and copy work mid-stream.
+        """
+        self._markdown_source += delta
+        self.append(delta)
+
 
 # ---------------------------------------------------------------------------
 # Status footer: progress bar + live throughput
@@ -2075,13 +2097,24 @@ class DichApp:
             # Called from the worker thread; marshal onto the UI thread.
             self.worker.post(self._on_progress, p)
 
+        def on_token(delta):
+            # Streamed deltas (None = start over) arrive on the worker thread.
+            self.worker.post(self._on_token, delta)
+
         self.worker.run(
             translate_text,
             text,
             on_progress=on_progress,
+            on_token=on_token,
             on_success=self._on_translation_done,
             on_error=self._on_translation_error,
         )
+
+    def _on_token(self, delta):
+        if delta is None:
+            self.target_pane.stream_reset()
+        else:
+            self.target_pane.stream_append(delta)
 
     def _on_progress(self, p: Progress):
         self.status.update(

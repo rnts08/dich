@@ -2,8 +2,8 @@
 
 Current version: **0.2.40**. Speech-to-text is working and is no longer the
 constraint; testing is done (Milestone 0.4). What stands between this and a
-finished app is **streaming translated output, confirming the microphone with
-a real speaker, and a written install guide**. The finished shape is
+finished app is **confirming the microphone with a real speaker, the buffer
+re-scan second pass, and a written install guide**. The finished shape is
 **runnable from source**; the double-clickable `.app` is deferred (see
 `BACKLOG.md`).
 
@@ -78,18 +78,20 @@ AI feature cannot run on the GPU, say so explicitly when proposing it.
 - [x] Quality scoring against the reference, so weak output is flagged
   (`6f23d74`, `dich/quality.py`)
 
-## Milestone 0.3.5 — Streaming translated output — *in progress*
+## Milestone 0.3.5 — Streaming translated output — *done*
 
-The last significant feature. The engine produces translations through a
-blocking `mlx_generate()` call; the UI only ever sees complete results.
+The last significant feature. `backend.py` now generates with
+`mlx_lm.stream_generate`; the Translate pane appends tokens while the batch
+runs, and the finished translation is re-rendered as Markdown when the run
+completes.
 
-- [ ] `backend.py`: generate with `mlx_lm.stream_generate` and surface tokens
+- [x] `backend.py`: generate with `mlx_lm.stream_generate` and surface tokens
   as they arrive
-- [ ] `ui.py`: the Translate pane appends tokens while the batch runs
+- [x] `ui.py`: the Translate pane appends tokens while the batch runs
   (through `Worker.post` — Tkinter is not thread-safe), status keeps counting
   words and tokens/sec live
-- [ ] Streaming and batch paths produce identical final text (regression
-  test with a fake engine)
+- [x] Streaming and batch paths produce identical final text (regression
+  test with a fake engine; the model goldens pin the real output)
 
 ## Milestone 0.4 — Confidence — *done*
 

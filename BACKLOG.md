@@ -56,11 +56,10 @@ Working today, verified against the code rather than assumed:
 - **Tests** — a 331-case suite (323 fast + 8 model goldens) under `tests/`,
   run locally by the pre-commit hook (CI is deliberately off; see below).
 
-Not working, or not present: **no token-by-token streaming of the
-translation** — `backend.py` translates through a blocking `mlx_generate()`
-call, so the UI only ever sees complete results — and the microphone has
-never been confirmed working with a human speaker — only with recorded audio
-played through speakers.
+Not working, or not present: the microphone has never been confirmed working
+with a human speaker — only with recorded audio played through speakers.
+Translation output streams token by token (`stream_generate`), the buffer
+re-scan second pass does not exist yet, and PDF layout is a flat text stream.
 
 ---
 
@@ -103,10 +102,10 @@ Everything below is partially done or not done at all, in priority order.
    until a person is at the mic with System Settings → Microphone permission
    granted. Cannot be reproduced from recorded audio.
 
-2. **Streaming translated output token by token** (P2) — the engine calls
-   blocking `mlx_generate()` (`dich/backend.py`); the UI consumes complete
-   results. Switch to `mlx_lm.stream_generate` and append tokens in the
-   Translate pane as the batch runs. **In progress.**
+2. **Streaming translated output token by token** (P2) — **done.** The engine
+   generates with `mlx_lm.stream_generate`; the Translate pane appends deltas
+   via `Worker.post`, a fallback retry resets the stream, and streamed text
+   is pinned identical to the batch text by tests and the model goldens.
 
 3. **Re-scan the retained buffer for an alternative transcript** (P2) — as
    originally intended, give the user a second pass over buffered audio
