@@ -1,6 +1,6 @@
 # Dịch — Backlog
 
-Last reviewed: 2026-10-16 · version **0.2.40** · branch `main`
+Last reviewed: 2026-10-17 · version **0.2.40** · branch `main`
 
 This is the working list of what is left, ordered by priority rather than by
 milestone. `ROADMAP.md` keeps the longer-horizon shape; this file is what to pick
@@ -10,9 +10,11 @@ The app is strictly **Vietnamese → English**. Anything about other languages,
 speech models per language, or multi-language support has been removed — it will
 not be built.
 
-Packaging and distribution (macOS `.app`, codesign, notarize, `.dmg`, bundled
-weights with download progress) are in the **deferred queue** at the end — not
-being worked on until much later.
+The finished shape is **runnable from source**: an install guide, green CI once
+the finishing work lands, and a version tag. Packaging and distribution
+(macOS `.app`, codesign, notarize, `.dmg`, bundled weights with download
+progress) are in the **deferred queue** at the end — not being worked on until
+much later.
 
 Priority key — **P0** blocks a release, **P1** needed for a usable stand-alone
 app, **P2** real improvement, **P3** nice to have.
@@ -26,7 +28,8 @@ Working today, verified against the code rather than assumed:
 - **Text translation** — PDF, DOCX, DOCM, DOC, RTF, Markdown, plain text →
   English, batched for long documents, cached so unchanged input is instant.
   DOCX structure (headings, tables, lists) is preserved block by block on save.
-  PDFs use `pdftotext -layout` when pypdf yields nothing, then OCR as a last resort.
+  PDFs use `pdftotext -layout` when pypdf yields nothing, then OCR as a last
+  resort — including OCR of images embedded inside text PDFs (`abdf5f5`).
 - **Speech** — mic or audio file → Vietnamese transcript → translation, with a
   partial transcript shown while the speaker is still talking, and translations
   that improve as context accumulates. Runs on the GPU via `mlx-audio`
@@ -34,29 +37,36 @@ Working today, verified against the code rather than assumed:
   Decibel meter, flat progress bar, push-to-talk, mic archive (raw WAV saved for
   re-transcription), idle + VRAM-pressure model unload.
 - **Cleanup and rewrite** — a rule-based pass removes stutters, repeated words,
-  phrase/line loops (Whisper getting stuck on real meeting audio) and filler
-  sounds from the transcript offline (on demand or automatically),
-  and an optional OpenAI-compatible endpoint can rewrite the transcript or the
-  translation for meaning. The rewrite is off by default and opt-in.
+  phrase/line loops and interleaved loops (Whisper getting stuck on real
+  meeting audio) and filler sounds from the transcript offline (on demand or
+  automatically), and an optional OpenAI-compatible endpoint can rewrite the
+  transcript or the translation for meaning. The rewrite is off by default and
+  opt-in.
+- **Translation fidelity** — side-by-side aligned view (`715b264`), diff vs the
+  Google reference (`cd97bdd`), offline quality scoring (`dich/quality.py`),
+  same-format export, folder batch, clipboard translation (Cmd+Shift+V), and
+  glossary support (`caf5812`).
+- **Session** — recent files, resume the last document on launch (`b3e52cb`),
+  window geometry remembered, proper quit handling.
 - **Config and models** under `~/.config/dich`, loading offline. No server
-  process to run. Model picker lists what is cached with size/RAM estimates.
+  process to run. Model picker lists what is cached with size/RAM estimates and
+  a download-size warning for uncached models.
 - **Menu bar, design tokens, rounded controls, markdown rendering, buffer-memory
   readout, licence and About.**
-- **Tests** — a 200+-case suite (unit + golden-file quality gate) under `tests/`,
+- **Tests** — a 331-case suite (323 fast + 8 model goldens) under `tests/`,
   run locally by the pre-commit hook (CI is deliberately off; see below).
 
-Not working, or not present: **no token-by-token streaming of the *translation***, and the microphone has never been confirmed working with a human speaker — only with recorded audio played through speakers.
+Not working, or not present: **no token-by-token streaming of the
+translation** — `backend.py` translates through a blocking `mlx_generate()`
+call, so the UI only ever sees complete results — and the microphone has
+never been confirmed working with a human speaker — only with recorded audio
+played through speakers.
 
 ---
 
 ## P0 — blocking
 
-None open. The suite landed in 0.2.26–0.2.35, closing Milestone 0.5 — see
-`ROADMAP.md`. Writing the first sentence-assembly test immediately found two
-more shipped bugs (the punctuation flush trigger had never fired, and
-`_trailing_silence(None)` crashed), which is the argument for the suite in one
-sentence. The suite is run locally by the pre-commit hook; CI was removed on
-purpose (see the notes at the end).
+None open.
 
 ---
 
@@ -79,8 +89,9 @@ in the filters — it cannot be reproduced without a person at a microphone.
 - [ ] If accuracy is the problem, act on it; if latency is, tune the window
 
 ### Install guide
-- [ ] A reproducible, written setup from a clean machine (`PACKAGING.md` covers
-  the app bundle; this is about getting `python -m dich` running from scratch)
+- [ ] `INSTALL.md`: a reproducible, written setup from a clean machine
+  (`PACKAGING.md` covers the app bundle; this is about getting `python -m dich`
+  running from scratch)
 
 ---
 
@@ -92,31 +103,24 @@ Everything below is partially done or not done at all, in priority order.
    until a person is at the mic with System Settings → Microphone permission
    granted. Cannot be reproduced from recorded audio.
 
-2. **Streaming translated output token by token** (P2) — the engine produces
-   translations incrementally; the UI does not consume or display them yet.
+2. **Streaming translated output token by token** (P2) — the engine calls
+   blocking `mlx_generate()` (`dich/backend.py`); the UI consumes complete
+   results. Switch to `mlx_lm.stream_generate` and append tokens in the
+   Translate pane as the batch runs. **In progress.**
 
-3. **Resume the last document on launch** (P2) — window geometry is remembered;
-   reopening the last file on startup is not.
+3. **Re-scan the retained buffer for an alternative transcript** (P2) — as
+   originally intended, give the user a second pass over buffered audio
+   (different window or model), compare, keep or discard.
 
 4. **Tune silence threshold and minimum sentence length against real speech**
    (P2) — `SILENCE_FLOOR` survived a −40 dB level sweep, but the values have
-   not been tuned against live human speech; the marker list still drops genuine
-   "cảm ơn các bạn" — decide whether that trade is right.
+   not been tuned against live human speech; the marker list still drops
+   genuine "cảm ơn các bạn" — decide whether that trade is right. Blocked
+   behind item 1.
 
-5. **Re-scan the retained buffer for an alternative transcript** (P2) — as
-   originally intended, give the user a second pass over buffered audio.
-
-6. **Side-by-side aligned view** (P2) — source paragraph ↔ translated paragraph
-   side by side, rather than top/bottom panes.
-
-7. **Combine consecutive short utterances into one model call** (P3) — the
-   setting exists; the combining logic itself is not implemented.
-
-8. **OCR for embedded diagrams and images inside PDFs** (P3) — scanned-page OCR
-   is done; images embedded within a text PDF are not OCR'd.
-
-9. **Perfect PDF layout** (P3) — `pdftotext -layout` is a fallback; true layout
-   fidelity (columns, side-by-side text, reading order) is not.
+5. **Perfect PDF layout** (P3) — `pdftotext -layout` is a fallback; true layout
+   fidelity (columns, side-by-side text, reading order) is not. Decide: build
+   it or close it as a documented limitation.
 
 ---
 
@@ -139,8 +143,10 @@ These cost real debugging time. They are constraints, not tasks:
 
 - **mlx-lm cannot load T5.** `VTSNLP/trans_model_vi_en` is a T5 encoder-decoder;
   the server dies with `Model type t5 not supported`. Encoder-decoder models are
-  unsupported outright. This is why TranslateGemma is used instead.
+  unsupported outright. This is why TranslateGemma is used.
 - **plamo-2-translate is English↔Japanese only**, so it cannot do Vietnamese.
+  Do not use this model. It is already gone from the config and the model cache
+  (verified 2026-10-17).
 - **mlx-lm.server cannot carry every prompt format.** Its
   `process_message_content()` flattens a `content` list into a plain string,
   discarding the `source_lang_code`/`target_lang_code` that TranslateGemma

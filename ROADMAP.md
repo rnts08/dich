@@ -1,9 +1,11 @@
 # Dịch — Roadmap
 
-Current version: **0.2.35**. Speech-to-text is working and is no longer the
-constraint; testing is done (Milestone 0.5). What stands between this and a
-stand-alone app is **packaging and confirming the microphone with a real
-speaker**.
+Current version: **0.2.40**. Speech-to-text is working and is no longer the
+constraint; testing is done (Milestone 0.4). What stands between this and a
+finished app is **streaming translated output, confirming the microphone with
+a real speaker, and a written install guide**. The finished shape is
+**runnable from source**; the double-clickable `.app` is deferred (see
+`BACKLOG.md`).
 
 `BACKLOG.md` is the prioritised list of what to pick up next. This file keeps
 the shape of where the project is going, and why.
@@ -15,50 +17,81 @@ the shape of where the project is going, and why.
 - [x] Mic capture, 16 kHz mono, numpy buffer with a configurable ceiling
 - [x] `faster-whisper` Vietnamese transcription, mic and file
 - [x] Audio decoded in-process: faster-whisper's `decode_audio()` passes
+  
       `av.open(metadata_errors=...)`, which the installed PyAV rejects
 - [x] Validated on real Vietnamese speech (150s sample, 22 utterances)
 - [x] Sentences emitted on a final trigger rather than mid-clause
 - [x] Context-accumulating translation: prior utterances as conversation turns,
+  
       then a block re-translation every `refine_every`
 - [x] `finalize()` so a trailing partial block is not left provisional
 - [x] Input device selection, stale-device fallback, no-mic handling
 - [x] Variable window (default 2s → first words ~1.2s after speech)
 - [x] Buffer-memory readout, a countdown to the next transcript, and an
+  
       explicit "Ns behind" / "Ns dropped" warning instead of a frozen 0.0s
 - [x] Hallucination markers, in-sentence stripping, repetition detection
 - [x] Silenced startup output; clean exit
 
-**Not done in this milestone, carried into the backlog:** a GPU path
-(`mlx-audio` cannot load its whisper model yet), push-to-talk, live partial
-transcript, and streaming translated output.
+**Carried out of this milestone since:** the GPU path landed (`mlx-audio`
+runs Whisper on the Metal GPU, `7a2d319`), as did push-to-talk and the live
+partial transcript. Streaming translated output is still open — it is the
+one significant feature left (see Milestone 0.3.5).
+
+Standing policy: **all AI and audio work should be GPU-accelerated.** STT
+runs on the GPU via `mlx-audio`; translation runs in-process on MLX. If a new
+AI feature cannot run on the GPU, say so explicitly when proposing it.
 
 ---
 
-## Milestone 0.3 — Stand-alone application
+## Milestone 0.2.5 — Models and processing fixes — *done*
 
-The point at which this stops being "run Python in a terminal".
+- [x] Only useful models offered, with a blocking progress bar while a model
+  loads (`ed1968c`, `cd628cd`)
+- [x] All MLX work on the GPU: STT via `mlx-audio` (`7a2d319`, `9034772`),
+  translation in-process on MLX
+- [x] The speech UI makes it clear audio is being processed: a live partial
+  transcript appears while the speaker is still talking, translation starts
+  after the first sentences and runs in parallel, and block re-translation
+  looks back for context (`c625865`, `acd64d7`)
+- [x] Noise and gibberish handled: speech-band filter, voice-only gate,
+  silence floor, hallucination markers, disfluency cleanup (`0f43584`,
+  `946c794`, `3fdb917`)
+- [x] Input decibel meter with decaying peak (`2f29356`)
+- [x] Transcription starts as soon as words are picked up (`c625865`)
+- [x] Determinate flat progress bar replaces the aimless sweep (`b0c088c`,
+  `5309ab9`, `caf5812`)
+- [x] Models unload only when idle or under VRAM pressure (`ed1968c`,
+  `cd628cd`)
 
-- [ ] macOS `.app` via pyinstaller or briefcase
-- [ ] Model weights bundled, or first-run download with visible progress
-- [ ] App icon, Finder metadata, codesign + notarize
-- [ ] Model picker listing what is already cached — at present a free-text entry
-      can silently start an 8 GB download
-- [ ] Download progress for an uncached model; unload when idle to free RAM
-- [ ] Remember window size and position; resume the last document
-- [ ] Recent files; proper quit handling for in-flight requests
-- [ ] Written, reproducible install guide
+## Milestone 0.3 — Translation fidelity — *done except PDF layout*
 
-## Milestone 0.4 — Translation fidelity
+- [ ] Preserve PDF layout rather than a flat text stream — `pdftotext
+  -layout` is a fallback; true columns and reading order are not done
+- [x] Preserve headings, tables and lists in DOCX output (`cd628cd`)
+- [x] Side-by-side aligned view: source paragraph ↔ translated paragraph
+  (`715b264`)
+- [x] Diff against the Google Translate reference (`cd97bdd`)
+- [x] Export in the format it was read from (`caf5812`)
+- [x] Batch-translate a folder; clipboard translation (`caf5812`,
+  Cmd+Shift+V)
+- [x] Quality scoring against the reference, so weak output is flagged
+  (`6f23d74`, `dich/quality.py`)
 
-- [ ] Preserve PDF layout rather than a flat text stream
-- [ ] Preserve headings, tables and lists in DOCX output
-- [ ] Side-by-side aligned view: source paragraph ↔ translated paragraph
-- [ ] Diff against the Google Translate reference
-- [ ] Export in the format it was read from (a `.docx` in, a `.docx` out)
-- [ ] Batch-translate a folder; clipboard / selected-text translation
-- [ ] Quality scoring against the reference, so weak output is flagged
+## Milestone 0.3.5 — Streaming translated output — *in progress*
 
-## Milestone 0.5 — Confidence — *done*
+The last significant feature. The engine produces translations through a
+blocking `mlx_generate()` call; the UI only ever sees complete results.
+
+- [ ] `backend.py`: generate with `mlx_lm.stream_generate` and surface tokens
+  as they arrive
+- [ ] `ui.py`: the Translate pane appends tokens while the batch runs
+  (through `Worker.post` — Tkinter is not thread-safe), status keeps counting
+  words and tokens/sec live
+- [ ] Streaming and batch paths produce identical final text (regression
+  test with a fake engine)
+
+## Milestone 0.4 — Confidence — *done*
 
 The largest gap, closed in 0.2.26–0.2.35: 80 tests under `tests/`, CI on every
 push, and a golden-file quality gate. Writing them found two more shipped bugs —
@@ -66,20 +99,41 @@ the punctuation flush trigger had never fired, and `_trailing_silence(None)`
 crashed — which is the whole argument for the suite.
 
 - [x] Unit tests: cache key invalidation, `<end_of_turn>` stop handling, every
+  
       extractor, the prompt-strategy switch, sentence assembly and its filters
 - [x] `RoundedButton` pointer events must not loop (the UI freeze)
 - [x] Golden-file translation tests for quality regressions
 - [x] CI running the suite and `py_compile` on every push
 
-## Milestone 0.6 — Beyond Vietnamese → English
+## Milestone 0.5 — Stand-alone application — *app-shaped; bundle deferred*
 
-The config is already shaped for other languages; the prompt and the STT are
-hard-coded to Vietnamese.
+The point at which this stops being "run Python in a terminal". The working
+model is **runnable from source**; the double-clickable bundle is parked in
+the deferred queue in `BACKLOG.md`.
 
-- [ ] Configurable source and target language end to end
-- [ ] A speech model per language
-- [ ] Glossary support so proper nouns stay consistent
-- [ ] OCR for diagrams and images inside PDFs
+- [ ] macOS `.app` via pyinstaller or briefcase — *deferred; the spec exists
+  in `packaging/dich.spec` and is untested*
+- [ ] Model weights bundled — *deferred with the bundle*
+- [ ] App icon, Finder metadata, codesign + notarize — *deferred; needs an
+  Apple Developer account and is manual*
+- [x] Model picker listing what is already cached, with size/RAM estimates
+  and a download-size warning for uncached models (`ed1968c`, `caf5812`)
+- [x] Unload when idle to free RAM; unload under VRAM pressure (`ed1968c`,
+  `cd628cd`)
+- [x] Remember window size and position; resume the last document (`b3e52cb`)
+- [x] Recent files; proper quit handling for in-flight requests
+- [ ] Written, reproducible install guide — *next (`INSTALL.md`)*
+
+## Milestone 0.6 — Beyond Vietnamese → English — *descoped*
+
+The app is strictly **Vietnamese → English** (decision recorded in
+`BACKLOG.md`): other languages, per-language speech models, and
+multi-language support will not be built.
+
+- [ ] Configurable source and target language end to end — *descoped*
+- [ ] A speech model per language — *descoped*
+- [x] Glossary support so proper nouns stay consistent (`caf5812`)
+- [x] OCR for diagrams and images inside PDFs (`abdf5f5`)
 
 ---
 
@@ -89,8 +143,10 @@ These cost real debugging time and are not bugs to be filed against:
 
 - **mlx-lm cannot load T5.** `VTSNLP/trans_model_vi_en` is a T5 encoder-decoder;
   it dies with `Model type t5 not supported`. Encoder-decoder models are
-  unsupported, which is why TranslateGemma is used.
+  unsupported, which is why TranslateGemma is used. Settled — do not revisit.
 - **plamo-2-translate is English↔Japanese only**, so it cannot do Vietnamese.
+  Do not use this model. It is already gone from the config and the model
+  cache (verified 2026-10-17).
 - **mlx-lm.server cannot carry every prompt format.** Its
   `process_message_content()` flattens a `content` list into a plain string,
   discarding the `source_lang_code`/`target_lang_code` TranslateGemma needs —
@@ -107,11 +163,10 @@ These cost real debugging time and are not bugs to be filed against:
 - **The hallucination filter drops genuine speech.** "cảm ơn các bạn" is removed
   deliberately: in YouTube-trained Whisper it is overwhelmingly an artefact.
 
-
 ## Bugs fixed after 0.2.17
 
 Recorded because each one was invisible until it was looked for, which is the
-argument for the tests in Milestone 0.5.
+argument for the tests in Milestone 0.4.
 
 - **Markdown files were converted to HTML before translation.** `_read_markdown`
   ran them through `markdown.markdown()`, so the model translated HTML while the
