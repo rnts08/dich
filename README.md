@@ -5,6 +5,13 @@ Vietnamese → English translator, running a local MLX model.
 ## Running
 
 ```bash
+./install.sh install     # venv, dependencies, pre-commit gate
+./install.sh run         # the app
+```
+
+Or from an existing virtualenv:
+
+```bash
 .venv/bin/python3 -m dich
 ```
 
@@ -75,6 +82,8 @@ time that model is asked for.
 | `dich/ui.py` | Tkinter app: Translate / Speech / Settings tabs |
 | `dich/backend.py` | text extraction, prompt strategies, cache, engine, contextual translation |
 | `dich/speech_engine.py` | mic + file audio, Whisper Vietnamese → completed sentences |
+| `dich/mlx_stt.py` | the GPU STT backend: Whisper weights via mlx-audio on Metal |
+| `dich/quality.py` | offline translation-quality scoring against a reference |
 | `dich/voice_filter.py` | voice-only gate that rejects non-speech mic windows |
 | `dich/audio_filter.py` | speech-band front-end: drops hum/rumble/hiss before the gate |
 | `dich/cleanup.py` | rule-based removal of stutters, repeats, loops and filler sounds |
@@ -93,6 +102,16 @@ time that model is asked for.
 | `.githooks/pre-commit` | local gate: ruff check, format check, fast test suite |
 | `tests/` | pytest suite: unit, Tk, and `model`-marked golden tests |
 | `test_data/` | sample documents and a Vietnamese speech recording (gitignored) |
+
+Planning and setup documents:
+
+| Path | Purpose |
+|---|---|
+| `INSTALL.md` | clean-machine setup, step by step |
+| `CHANGELOG.md` | what each release changed |
+| `BACKLOG.md` | the prioritised list of what to pick up next |
+| `ROADMAP.md` | milestones and why the project is shaped the way it is |
+| `packaging/PACKAGING.md` | bundling a double-clickable `.app` (deferred) |
 
 ## Translate tab
 
@@ -113,6 +132,12 @@ Long documents are split on paragraph boundaries into batches of at most 24
 paragraphs and 8000 characters, translated in turn, and re-joined — a context
 limit avoids truncation. The status bar shows a determinate progress bar across
 batches plus words and tokens/sec.
+
+Each batch **streams into the pane as the model writes it**, so a long
+document shows its translation growing instead of arriving all at once; the
+finished text is then re-rendered as Markdown. A fallback-model retry clears
+what was streamed and starts over, and cached results appear instantly as
+before.
 
 The translation renders as **Markdown** — headings, bold, italic, code, lists,
 quotes — and the model is asked to emit Markdown, so a translated document keeps
@@ -379,7 +404,7 @@ domain that phrase is overwhelmingly an artefact, so the trade is deliberate.
 
 ## Licence
 
-Non-commercial. © 2026 Tim Bergström. See [LICENCE](LICENCE) for the full terms;
+Non-commercial. © 2026 Tim Bergström. See [LICENSE](LICENSE) for the full terms;
 the summary is in Settings → About, with a link to the project home at
 <https://github.com/rnts08/dich>.
 

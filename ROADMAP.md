@@ -1,6 +1,6 @@
 # Dịch — Roadmap
 
-Current version: **0.2.41**. Speech-to-text is working and is no longer the
+Current version: **0.2.42**. Speech-to-text is working and is no longer the
 constraint; testing is done (Milestone 0.4). The live microphone path was
 repaired and verified via a BlackHole loopback (2026-10-18) — see
 `BACKLOG.md` for the aliasing bug it exposed. What stands between this and a

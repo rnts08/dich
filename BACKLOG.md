@@ -1,6 +1,6 @@
 # Dịch — Backlog
 
-Last reviewed: 2026-10-17 · version **0.2.40** · branch `main`
+Last reviewed: 2026-10-18 · version **0.2.42** · branch `main`
 
 This is the working list of what is left, ordered by priority rather than by
 milestone. `ROADMAP.md` keeps the longer-horizon shape; this file is what to pick
@@ -53,7 +53,7 @@ Working today, verified against the code rather than assumed:
   a download-size warning for uncached models.
 - **Menu bar, design tokens, rounded controls, markdown rendering, buffer-memory
   readout, licence and About.**
-- **Tests** — a 331-case suite (323 fast + 8 model goldens) under `tests/`,
+- **Tests** — a 349-case suite (341 fast + 8 model goldens) under `tests/`,
   run locally by the pre-commit hook (CI is deliberately off; see below).
 
 Not working, or not present: nothing known broken. The live microphone path
