@@ -400,7 +400,8 @@ The version policy:
 - **0.5.x** — tests and release
 
 `ROADMAP.md` tracks the longer-horizon milestones; `BACKLOG.md` is the
-prioritised list of what to pick up next.
+prioritised list of what to pick up next; `CHANGELOG.md` records what each
+release changed.
 
 Bump a patch for every fix, feature, or change; bump a minor when starting a new
 milestone (for example 0.1.x → 0.2.0 when speech-to-text begins).
