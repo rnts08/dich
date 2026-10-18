@@ -86,6 +86,8 @@ time that model is asked for.
 | `dev/regen_goldens.py` | regenerates the golden translation files |
 | `dev/cleanup_report.py` | before/after of the cleaner over a folder of real transcripts |
 | `dev/pipeline_report.py` | the whole path (cleanup → translation) over real transcripts |
+| `dev/mic_check.py` | diagnoses a physical microphone: level, voice-gate verdicts, per window |
+| `dev/loopback_check.py` | plays a real recording into a BlackHole loopback while the live engine captures |
 | `ruff.toml` | lint + format rules (ruff) |
 | `.githooks/pre-commit` | local gate: ruff check, format check, fast test suite |
 | `tests/` | pytest suite: unit, Tk, and `model`-marked golden tests |
@@ -168,6 +170,15 @@ A file job shows its progress in two halves: decoding, then transcribing
 a long recording is never a blank bar. **Save…** writes the Vietnamese transcript
 and the English translation together — labelled sections in `.txt`, or a
 side-by-side table in `.md` — so the source can be checked next to the output.
+
+### Re-scan: a second pass over a recording
+
+**Re-scan ▾** re-transcribes an archived recording — one of the WAVs the
+microphone archive saved, or any file — with a speech model of your choice.
+The result opens beside the current transcript; **Keep** replaces the
+transcript and re-translates, **Discard** changes nothing. The whole-file
+pass often reads better than the live windowing, and a different model
+catches words the first one missed.
 
 ### Cleaning up disfluencies
 

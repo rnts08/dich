@@ -55,6 +55,8 @@ def test_file_error_clears_busy_state_and_stops_poll():
 
 def test_empty_result_reports_no_speech():
     """A file that yields no sentences is named as such, not reported as success."""
+    from types import MethodType
+
     events = []
     result = SimpleNamespace(sentences=[], duration=12.0)
     app = SimpleNamespace(
@@ -67,6 +69,7 @@ def test_empty_result_reports_no_speech():
         root=SimpleNamespace(after=lambda delay, fn: events.append(("after", delay))),
         translator=SimpleNamespace(normalize=lambda s: s),
     )
+    app._adopt_transcript = MethodType(ui.DichApp._adopt_transcript, app)
 
     ui.DichApp._on_audio_transcribed(app, result)
 
@@ -80,6 +83,8 @@ def test_empty_result_reports_no_speech():
 
 
 def test_non_empty_result_still_reports_the_count():
+    from types import MethodType
+
     events = []
     result = SimpleNamespace(sentences=["Xin chào.", "Tạm biệt."], duration=3.0)
     app = SimpleNamespace(
@@ -92,6 +97,7 @@ def test_non_empty_result_still_reports_the_count():
         root=SimpleNamespace(after=lambda delay, fn: events.append(("after", delay))),
         translator=SimpleNamespace(normalize=lambda s: s),
     )
+    app._adopt_transcript = MethodType(ui.DichApp._adopt_transcript, app)
 
     ui.DichApp._on_audio_transcribed(app, result)
 

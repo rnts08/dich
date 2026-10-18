@@ -1,11 +1,12 @@
 # Dịch — Roadmap
 
-Current version: **0.2.40**. Speech-to-text is working and is no longer the
-constraint; testing is done (Milestone 0.4). What stands between this and a
-finished app is **confirming the microphone with a real speaker, the buffer
-re-scan second pass, and a written install guide**. The finished shape is
-**runnable from source**; the double-clickable `.app` is deferred (see
-`BACKLOG.md`).
+Current version: **0.2.41**. Speech-to-text is working and is no longer the
+constraint; testing is done (Milestone 0.4). The live microphone path was
+repaired and verified via a BlackHole loopback (2026-10-18) — see
+`BACKLOG.md` for the aliasing bug it exposed. What stands between this and a
+finished app is **a mic session with a real speaker** (for tuning), and the
+PDF-layout decision. The finished shape is **runnable from source**; the
+double-clickable `.app` is deferred.
 
 `BACKLOG.md` is the prioritised list of what to pick up next. This file keeps
 the shape of where the project is going, and why.
@@ -93,6 +94,17 @@ completes.
 - [x] Streaming and batch paths produce identical final text (regression
   test with a fake engine; the model goldens pin the real output)
 
+## Milestone 0.3.6 — Re-scan and the live-mic fix — *done*
+
+- [x] Speech → Re-scan ▾: re-transcribe an archived recording with a chosen
+  model, compare it beside the current transcript, Keep adopts it through the
+  same path Open Audio uses
+- [x] The live capture buffer copies each callback's audio instead of
+  aliasing PortAudio's reused callback buffer — the bug that made live
+  transcription loop garbage while archived recordings stayed clean (found
+  via the BlackHole loopback, `dev/loopback_check.py`)
+- [x] `dev/mic_check.py` diagnoses a physical microphone link by link
+
 ## Milestone 0.4 — Confidence — *done*
 
 The largest gap, closed in 0.2.26–0.2.35: 80 tests under `tests/`, CI on every
@@ -124,7 +136,8 @@ the deferred queue in `BACKLOG.md`.
   `cd628cd`)
 - [x] Remember window size and position; resume the last document (`b3e52cb`)
 - [x] Recent files; proper quit handling for in-flight requests
-- [ ] Written, reproducible install guide — *next (`INSTALL.md`)*
+- [x] Written, reproducible install guide (`INSTALL.md`, 2026-10-18; includes
+  the `dev/mic_check.py` rehearsal and `dev/loopback_check.py` loopback)
 
 ## Milestone 0.6 — Beyond Vietnamese → English — *descoped*
 

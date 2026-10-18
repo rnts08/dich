@@ -207,20 +207,20 @@ class SpeechEngine:
 
     # -- lifecycle --------------------------------------------------------
     def start(self, archive_dir: Optional[str] = None):
-        import sounddevice as sd
+        """Load the model, open the microphone, and start transcribing."""
+        self.prepare(archive_dir=archive_dir)
+        self.open_capture()
 
+    def prepare(self, archive_dir: Optional[str] = None):
+        """
+        Load the model, start the transcription threads, enable archiving.
+
+        Everything `start` does except opening the audio device. Callers that
+        capture through their own stream (the loopback diagnostic) drive
+        `_on_audio` themselves and never call `open_capture`.
+        """
         self._model = _whisper_model(self.model_size)
-
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            device=self.device_index,
-            callback=self._on_audio,
-            blocksize=int(SAMPLE_RATE * 0.5),
-        )
         self._stop.clear()
-        self._stream.start()
         self._threads = [
             threading.Thread(target=self._transcribe_loop, daemon=True),
         ]
@@ -233,10 +233,30 @@ class SpeechEngine:
             self._archive_blocks = []
             self._archive_enabled = True
 
+    def open_capture(self):
+        """Open the microphone InputStream whose callback is `_on_audio`."""
+        import sounddevice as sd
+
+        self._stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            device=self.device_index,
+            callback=self._on_audio,
+            blocksize=int(SAMPLE_RATE * 0.5),
+        )
+        self._stream.start()
+
     def _on_audio(self, indata, frames, time_info, status):  # noqa: ARG001
         """Append one input block; drop the oldest audio once past the ceiling."""
         with self._buffer_lock:
-            mono = np.ascontiguousarray(indata[:, 0])
+            # Copy now: indata wraps PortAudio's own callback memory, which is
+            # reused on the next invocation. A view here would make every
+            # buffered block show whatever the latest callback received, so
+            # windows would transcribe looped garbage (and Whisper would
+            # hallucinate over it). The archive below always copied, which is
+            # why saved recordings were clean while live transcription was not.
+            mono = np.array(indata[:, 0], dtype=np.float32)
             self._buffer.append((mono, len(mono)))
             self._buffered += len(mono)
             if mono.size:

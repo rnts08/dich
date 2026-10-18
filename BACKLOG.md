@@ -56,10 +56,24 @@ Working today, verified against the code rather than assumed:
 - **Tests** — a 331-case suite (323 fast + 8 model goldens) under `tests/`,
   run locally by the pre-commit hook (CI is deliberately off; see below).
 
-Not working, or not present: the microphone has never been confirmed working
-with a human speaker — only with recorded audio played through speakers.
-Translation output streams token by token (`stream_generate`), the buffer
-re-scan second pass does not exist yet, and PDF layout is a flat text stream.
+Not working, or not present: nothing known broken. The live microphone path
+was repaired and verified end to end on 2026-10-18 (see below); what remains
+untested is a *human* speaking into it, which the loopback cannot replace for
+tuning judgements. PDF layout is a flat text stream.
+
+### The live-mic aliasing bug, found and fixed (2026-10-18)
+
+A BlackHole loopback (`dev/loopback_check.py`) — playing real recordings into
+an input device while the app's own live engine captures — showed the live
+path transcribing looped garbage and Whisper hallucinating, while the archive
+of the very same audio transcribed perfectly. Root cause: `_on_audio` stored
+`np.ascontiguousarray(indata[:, 0])`, a *view* of sounddevice's callback
+buffer, which PortAudio reuses for the next callback. Every buffered block
+silently showed the latest callback's audio. The archive always copied, which
+is why saved recordings were clean while live output was not. The fix copies
+at capture time (`np.array(...)`, pinned by `tests/test_capture_aliasing.py`).
+A human may still speak differently from a loopback, but the software path is
+now proven end to end.
 
 ---
 
@@ -72,25 +86,18 @@ None open.
 ## P1 — needed for a stand-alone app
 
 ### Confirm the microphone end to end
-The only untested path with a real person. Recorded audio fed through speakers
-works; a human speaking has never been confirmed.
-
-Evidence from recorded material (2026-10-16): a level sweep of real Vietnamese
-speech through the live window path still transcribes down to about −40 dB
-(peak 0.0076, well under any sane mic gain); only −50 dB (peak 0.0024, below
-`SILENCE_FLOOR`) is dropped. Nine 20 s excerpts spread across 38 minutes of a
-multi-speaker dictation file all produced text, so varied voices transcribe
-from a file. The failure is therefore at the live mic or its environment, not
-in the filters — it cannot be reproduced without a person at a microphone.
+The software path is now verified (2026-10-18): with BlackHole looped back,
+real recordings through the app's own live engine produce 36 correct
+sentences in 150 s, first at 7.4 s. What a loopback cannot decide is whether
+a *human at the real microphone* works — gain, room noise, permission.
 
 - [ ] Listen with a Vietnamese speaker and record what actually comes out
 - [ ] Check the input device and System Settings → Microphone permission first
 - [ ] If accuracy is the problem, act on it; if latency is, tune the window
 
 ### Install guide
-- [ ] `INSTALL.md`: a reproducible, written setup from a clean machine
-  (`PACKAGING.md` covers the app bundle; this is about getting `python -m dich`
-  running from scratch)
+- [x] `INSTALL.md`: a reproducible, written setup from a clean machine —
+  written 2026-10-18, includes the mic rehearsal and loopback checks
 
 ---
 
@@ -98,24 +105,30 @@ in the filters — it cannot be reproduced without a person at a microphone.
 
 Everything below is partially done or not done at all, in priority order.
 
-1. **Confirm the microphone with a real Vietnamese speaker** (P1) — blocked
-   until a person is at the mic with System Settings → Microphone permission
-   granted. Cannot be reproduced from recorded audio.
+1. **Confirm the microphone with a real Vietnamese speaker** (P1) — the
+   software path is verified (loopback, see above); this is about gain, room
+   noise and permission on the physical microphone.
 
 2. **Streaming translated output token by token** (P2) — **done.** The engine
    generates with `mlx_lm.stream_generate`; the Translate pane appends deltas
    via `Worker.post`, a fallback retry resets the stream, and streamed text
    is pinned identical to the batch text by tests and the model goldens.
 
-3. **Re-scan the retained buffer for an alternative transcript** (P2) — as
-   originally intended, give the user a second pass over buffered audio
-   (different window or model), compare, keep or discard.
+3. **Re-scan the retained buffer for an alternative transcript** (P2) —
+   **done.** Speech → Re-scan ▾ lists archived recordings, re-transcribes one
+   with a chosen model, shows it beside the current transcript, and Keep
+   adopts it through the same path Open Audio uses. Verified against a real
+   loopback capture: 36 live sentences vs 24 (turbo, whole file) vs 58
+   (small), with visibly better reading on the whole-file pass.
 
-4. **Tune silence threshold and minimum sentence length against real speech**
-   (P2) — `SILENCE_FLOOR` survived a −40 dB level sweep, but the values have
-   not been tuned against live human speech; the marker list still drops
-   genuine "cảm ơn các bạn" — decide whether that trade is right. Blocked
-   behind item 1.
+4. **Tune silence threshold and the voice gate against real speech** (P2) —
+   new evidence from the loopback work (2026-10-18): clean synthesized
+   Vietnamese measures a 0.55–0.60 voice-band share and passes the gate
+   easily, but real meeting recordings measure 0.05–0.45 — *below* the gate's
+   0.5 bar — so the live mic would reject much of the material the file path
+   transcribes fine. The thresholds were calibrated on mic speech; decide
+   whether recorded/noisy material should pass too. The `cảm ơn các bạn`
+   marker trade also still needs a live-speaker verdict.
 
 5. **Perfect PDF layout** (P3) — `pdftotext -layout` is a fallback; true layout
    fidelity (columns, side-by-side text, reading order) is not. Decide: build
@@ -182,6 +195,10 @@ These cost real debugging time. They are constraints, not tasks:
   from git history when the time comes — do not re-add new CI before then).
   The local gate is `.githooks/pre-commit` (ruff check + format check + the
   fast suite); enable it with `git config core.hooksPath .githooks`.
+- The live mic can be exercised without a person: install BlackHole
+  (`brew install blackhole-2ch`) and run `dev/loopback_check.py` with a real
+  recording — it plays into the loopback while the app's own engine captures.
+  `dev/mic_check.py` diagnoses a physical microphone link by link.
 - `dev/bump_version.py` bumps the patch, commits and tags, and refuses to run on
   a dirty tree. Commit your change first, then bump.
 - `DICH_LOG_LEVEL=INFO` restores the startup output that was silenced.

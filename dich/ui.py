@@ -951,6 +951,10 @@ class DichApp:
         theme.RoundedButton(
             toolbar, "Clean up", command=self.cleanup_speech, variant="ghost"
         ).pack(side="left", padx=(0, theme.SPACE_2))
+        self.rescan_button = theme.RoundedButton(
+            toolbar, "Re-scan ▾", command=self._show_rescan_menu, variant="ghost"
+        )
+        self.rescan_button.pack(side="left", padx=(0, theme.SPACE_2))
         self.rewrite_button = theme.RoundedButton(
             toolbar, "Rewrite ▾", command=self._show_rewrite_menu, variant="ghost"
         )
@@ -2280,8 +2284,16 @@ class DichApp:
 
     def _on_audio_transcribed(self, result):
         self._file_transcribing = False  # the file job's phases are over
-        # Normalise once, up front, so the pane, the progress counter and the
-        # translator all describe the same list of utterances.
+        self._adopt_transcript(result)
+
+    def _adopt_transcript(self, result):
+        """
+        Put a fresh transcription into the speech tab and translate it.
+
+        Shared by Open Audio and Re-scan → Keep: normalise once, up front, so
+        the pane, the progress counter and the translator all describe the
+        same list of utterances.
+        """
         sentences = [self.translator.normalize(s) for s in result.sentences]
         sentences = [s for s in sentences if s]
         count = len(sentences)
@@ -2418,6 +2430,160 @@ class DichApp:
         self.status.set_stats(cleanup.summarize(stats), GREEN if changed else FG)
         if changed and not self.translator.transcript:
             self.status.set_hint("every line was filler — the transcript is empty now")
+
+    # -- re-scan: a second pass over a recorded buffer -----------------------
+    def _rescan_choices(self, limit: int = 6):
+        """Recent archive recordings for the menu, newest first, capped."""
+        return backend.archive_files()[:limit]
+
+    def _show_rescan_menu(self):
+        """Offer recent recordings to re-transcribe with a different model."""
+        menu = tk.Menu(self.root, tearoff=False)
+        choices = self._rescan_choices()
+        if not choices:
+            menu.add_command(
+                label="No archived recordings yet — record with archiving on",
+                state="disabled",
+            )
+        for path in choices:
+            menu.add_command(
+                label=path.name, command=lambda p=path: self._ask_rescan_model(p)
+            )
+        menu.add_separator()
+        menu.add_command(
+            label="Choose file…", command=lambda: self._ask_rescan_model(None)
+        )
+        try:
+            menu.tk_popup(
+                self.rescan_button.winfo_rootx(),
+                self.rescan_button.winfo_rooty() + self.rescan_button.winfo_height(),
+            )
+        finally:
+            menu.grab_release()
+
+    def _ask_rescan_model(self, path):
+        """Pick a recording (unless given), then ask which model to use."""
+        if speech_engine is None:
+            messagebox.showerror(
+                "Speech dependencies missing",
+                "Install with:\n\npip install sounddevice faster-whisper av",
+            )
+            return
+        if path is None:
+            chosen = filedialog.askopenfilename(
+                title="Choose a recording to re-scan",
+                initialdir=str(backend.audio_archive_dir()),
+                filetypes=[
+                    ("Audio files", "*.wav *.mp3 *.m4a *.ogg *.flac *.aac"),
+                    ("All files", "*.*"),
+                ],
+            )
+            if not chosen:
+                return
+            path = Path(chosen)
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Re-scan with which speech model?")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ttk.Label(
+            dialog, text=f"Re-transcribe {Path(path).name} with:", padding=10
+        ).pack(anchor="w")
+        choice = tk.StringVar(value=speech_engine.FILE_MODEL)
+        for model_id, label in speech_engine.SPEECH_MODELS:
+            ttk.Radiobutton(dialog, text=label, value=model_id, variable=choice).pack(
+                anchor="w", padx=16
+            )
+
+        def confirm():
+            dialog.destroy()
+            self.start_rescan(path, choice.get())
+
+        ttk.Button(dialog, text="Re-scan", command=confirm).pack(pady=(10, 2))
+        ttk.Button(dialog, text="Cancel", command=dialog.destroy).pack(pady=(2, 10))
+
+    def start_rescan(self, path, model: str):
+        """
+        Re-transcribe a saved recording with a chosen model, then compare.
+
+        Unlike Open Audio this leaves the current transcript and translation
+        untouched: the point is to compare, and nothing changes until Keep.
+        """
+        if self._file_transcribing:
+            self.status.set_hint("a file is already being transcribed")
+            return
+        # A live mic and a re-scan would race for the audio pipeline; a file
+        # job stops the recording first, and a re-scan must too.
+        if self.recording:
+            self.stop_recording()
+
+        self._file_transcribing = True
+        self.mic_status.configure(text="re-scanning…")
+        self.status.set_busy(
+            "re-scanning recording", hint=f"{Path(path).name} with {model}"
+        )
+        self._start_memory_poll()
+        self.worker.run(
+            speech_engine.transcribe_file,
+            str(path),
+            model,
+            on_progress=lambda phase, percent: self.worker.post(
+                self._on_file_progress, phase, percent
+            ),
+            on_success=self._on_rescanned,
+            on_error=self.on_file_transcription_error,
+        )
+
+    def _on_rescanned(self, result):
+        """Show the re-scan next to the current transcript; Keep adopts it."""
+        self._file_transcribing = False
+        self._stop_memory_poll()
+        self._show_rescan_comparison(result)
+
+    def _show_rescan_comparison(self, result):
+        current = self.transcript_pane.get().strip()
+        fresh = "\n".join(result.sentences).strip()
+
+        window = tk.Toplevel(self.root)
+        self._rescan_window = window
+        window.title("Re-scan result")
+        window.transient(self.root)
+        window.geometry("1100x640")
+        body = ttk.PanedWindow(window, orient=tk.HORIZONTAL)
+        body.pack(fill="both", expand=True, padx=theme.SPACE_3, pady=theme.SPACE_3)
+
+        left = TextPane(
+            body, "Current transcript (this session)", editable=False, markdown=False
+        )
+        right = TextPane(
+            body,
+            f"Re-scan — {result.model}, {len(result.sentences)} sentences",
+            editable=False,
+            markdown=False,
+        )
+        body.add(left, weight=1)
+        body.add(right, weight=1)
+        left.set(current or "(nothing recorded yet)")
+        right.set(fresh or f"(no usable speech in {result.duration:.0f}s)")
+
+        buttons = ttk.Frame(window)
+        buttons.pack(fill="x", padx=theme.SPACE_3, pady=(0, theme.SPACE_3))
+        keep = ttk.Button(
+            buttons,
+            text="Keep — replace the transcript",
+            command=lambda: self._keep_rescan(result, window),
+        )
+        keep.pack(side="right", padx=(theme.SPACE_2, 0))
+        if not fresh:
+            keep.state(["disabled"])  # nothing usable to adopt
+        ttk.Button(buttons, text="Discard", command=window.destroy).pack(side="right")
+
+    def _keep_rescan(self, result, window):
+        """Replace the session transcript with the re-scan and re-translate."""
+        window.destroy()
+        self._new_translator()
+        self._file_translate_total = 0
+        self._adopt_transcript(result)
 
     def _show_rewrite_menu(self):
         """Offer the two rewrite targets, since each keeps its own language."""
