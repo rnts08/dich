@@ -5,6 +5,14 @@ This is the reproducible setup from a clean Apple Silicon Mac, ending with
 `python -m dich` running. (`PACKAGING.md` covers bundling a double-clickable
 `.app`, which is a separate, deferred step.) Every command runs in Terminal.
 
+The fastest path is the bundled script, which does steps 1–4 and 5's launch:
+
+    ./install.sh install     # venv + all dependencies + pre-commit gate
+    ./install.sh run         # launch the app
+    ./install.sh status      # what is installed, tkinter, hooks, model cache
+
+The steps below are what it does, for when you want them one at a time.
+
 1. Install Python 3.11 or newer
 --------------------------------
 

@@ -82,6 +82,7 @@ time that model is asked for.
 | `dich/theme.py` | palette and shared widget styles |
 | `dich/VERSION` | single source of truth for the version |
 | `dich/config.json` | first-run seed; the live copy lives at `~/.config/dich` |
+| `install.sh` | install / run / update / status for the source setup — `./install.sh install` |
 | `dev/bump_version.py` | bumps patch/minor, commits, and tags |
 | `dev/regen_goldens.py` | regenerates the golden translation files |
 | `dev/cleanup_report.py` | before/after of the cleaner over a folder of real transcripts |
