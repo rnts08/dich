@@ -594,10 +594,35 @@ class DichApp:
         self._last_activity = time.time()
         self._idle_unloaded = False
         self._pressure_unloaded = False
+        # Unsaved-settings tracking: a snapshot taken after the widgets are
+        # built, compared on a slow poll. `_recording_started` feeds the
+        # lifetime speech-time counter.
+        self._settings_snapshot: dict = {}
+        self._dirty_shown = False
+        self._settings_after: str | None = None
+        self._stats_window = None
+        self._stats_after: str | None = None
+        self._recording_started: float | None = None
 
         self._build_style()
         self._build_menu()
         self._build_widgets()
+
+        # One-time migration: the seed used to ship "small" as the speech
+        # model — a CPU-era default. On a machine where the GPU default is
+        # something else, an unchanged seed now resolves to that default
+        # (empty = the machine's choice) instead of pinning the CPU model.
+        if (
+            speech_engine is not None
+            and backend.CONFIG.get("mic_model") == "small"
+            and speech_engine.default_live_model() != "small"
+        ):
+            backend.CONFIG["mic_model"] = ""
+            self._save_config_fields({"mic_model": ""})
+
+        # Baseline for the unsaved-changes marker; every Save refreshes it.
+        self._settings_snapshot = self._settings_values()
+        self._poll_settings_dirty()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -801,10 +826,17 @@ class DichApp:
             font=theme.FONT_SMALL,
         )
         self.health_text.pack(side="left", padx=(4, 0))
+        # Translation model on top, the active speech model under it.
+        model_box = tk.Frame(status_box, bg=BG)
+        model_box.pack(side="left", padx=(8, 0))
         self.model_label = tk.Label(
-            status_box, text="", bg=BG, foreground=SUBTLE, font=theme.FONT_SMALL
+            model_box, text="", bg=BG, foreground=SUBTLE, font=theme.FONT_SMALL
         )
-        self.model_label.pack(side="left", padx=(8, 0))
+        self.model_label.pack(anchor="w")
+        self.stt_label = tk.Label(
+            model_box, text="", bg=BG, foreground=SUBTLE, font=theme.FONT_SMALL
+        )
+        self.stt_label.pack(anchor="w")
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(
@@ -1116,6 +1148,8 @@ class DichApp:
             variant="ghost",
             background=theme.SURFACE0,
         ).grid(row=row, column=1, pady=(theme.SPACE_1, theme.SPACE_3), sticky="w")
+        self.dirty_label = ttk.Label(form, text="", style="Faint.TLabel")
+        self.dirty_label.grid(row=row, column=2, sticky="w", pady=theme.SPACE_1)
         row += 2
 
         # --- startup ---------------------------------------------------------
@@ -1175,7 +1209,12 @@ class DichApp:
             row=row, column=0, sticky="w", pady=theme.SPACE_1
         )
         self.mic_model_var = tk.StringVar()
-        self.mic_model_labels = [label for _name, label in speech_engine.SPEECH_MODELS]
+        # The picker fits this machine: GPU-only models are offered only when
+        # a Metal GPU is reachable, and the default is the GPU model there.
+        self.mic_model_labels, self.mic_model_ids = speech_engine.stt_model_choices()
+        self._mic_model_by_label = dict(
+            zip(self.mic_model_labels, self.mic_model_ids, strict=True)
+        )
         self.mic_model_combo = ttk.Combobox(
             form,
             textvariable=self.mic_model_var,
@@ -1185,7 +1224,7 @@ class DichApp:
         )
         self.mic_model_combo.grid(row=row, column=1, sticky="w", pady=theme.SPACE_1)
         self._set_mic_model_label(
-            backend.CONFIG.get("mic_model", speech_engine.default_live_model())
+            backend.CONFIG.get("mic_model") or speech_engine.default_live_model()
         )
         row += 1
 
@@ -1613,6 +1652,25 @@ class DichApp:
 
         form.rowconfigure(row - 1, weight=1)  # diff pane row expands
 
+        # --- statistics -------------------------------------------------------
+        self._section(form, "Statistics", row)
+        row += 1
+
+        theme.RoundedButton(
+            form,
+            "Stats for nerds",
+            command=self.show_stats,
+            variant="ghost",
+            background=theme.SURFACE0,
+        ).grid(row=row, column=0, pady=theme.SPACE_1, sticky="w")
+        ttk.Label(
+            form,
+            text="LLM encode/decode speeds, and lifetime totals: words "
+            "translated, sentences, speech time.",
+            style="Faint.TLabel",
+        ).grid(row=row, column=1, columnspan=2, sticky="w", padx=theme.SPACE_2)
+        row += 1
+
         # --- about -----------------------------------------------------------
         self._section(form, "About", row)
         row += 1
@@ -1855,16 +1913,22 @@ class DichApp:
 
     def _set_mic_model_label(self, model):
         """Show the label for a model id, falling back to the raw id."""
-        label = speech_engine.speech_model_label(str(model))
-        self.mic_model_var.set(label if label in self.mic_model_labels else str(model))
+        model = str(model)
+        if model not in self.mic_model_ids:
+            # A saved model this machine cannot run (GPU-only, no GPU):
+            # show and save the machine's default instead.
+            model = speech_engine.default_live_model()
+        label = speech_engine.speech_model_label(model)
+        self.mic_model_var.set(label if label in self.mic_model_labels else model)
 
     def _selected_mic_model(self) -> str:
         """Map the chosen label back to a model id."""
         chosen = self.mic_model_var.get()
-        for name, label in speech_engine.SPEECH_MODELS:
-            if label == chosen:
-                return name
-        return str(backend.CONFIG.get("mic_model", speech_engine.default_live_model()))
+        model = self._mic_model_by_label.get(chosen)
+        if model:
+            return model
+        fallback = speech_engine.default_live_model()
+        return str(backend.CONFIG.get("mic_model") or fallback)
 
     def _on_preload_toggled(self):
         """Turning the option on should load the model now, not just persist it."""
@@ -2145,11 +2209,15 @@ class DichApp:
             return
 
         self.cache_label.configure(text="")
-        rate = (
-            f" · {result.tokens_per_second:.1f} tok/s"
-            if result.tokens_per_second
-            else ""
-        )
+        # The generation's own decode speed when the run streamed; the wall
+        # clock figure otherwise (it includes the prompt encode).
+        decode = getattr(result, "generation_tps", 0.0)
+        if decode:
+            rate = f" · {decode:.1f} tok/s"
+        elif result.tokens_per_second:
+            rate = f" · {result.tokens_per_second:.1f} tok/s"
+        else:
+            rate = ""
         self.status.set_stats(
             f"{result.words_out} words · {result.elapsed:.1f}s{rate}", FG
         )
@@ -2315,6 +2383,8 @@ class DichApp:
         self.mic_status.configure(text=f"{count} sentences, {result.duration:.0f}s")
         self.transcript_pane.set("\n".join(sentences))
         self.status.set_stats("translating…")
+        # Lifetime counters: one transcribed file and its audio length.
+        backend.bump_stats(files_transcribed=1, speech_seconds=int(result.duration))
         # The translation is the second half of a file job: show how far through
         # the sentences — and so the file — the translation has got.
         self._file_translate_total = count
@@ -2387,6 +2457,12 @@ class DichApp:
             )
         else:
             self.status.set_stats(f"done · {stats['refined']} refined", GREEN)
+        if stats["utterances"]:
+            # Lifetime counters: the finished transcript and its English.
+            backend.bump_stats(
+                sentences_transcribed=stats["utterances"],
+                words_translated=backend.count_words(self.translator.render_refined()),
+            )
 
     def refine_speech(self):
         """Re-translate the pending utterances as one passage."""
@@ -2780,7 +2856,7 @@ class DichApp:
         self.worker.run(
             speech_engine.start_mic_stream,
             model_size=str(
-                backend.CONFIG.get("mic_model", speech_engine.default_live_model())
+                backend.CONFIG.get("mic_model") or speech_engine.default_live_model()
             ),
             device_index=backend.CONFIG.get("mic_device_index"),
             window_seconds=float(
@@ -2830,12 +2906,14 @@ class DichApp:
         self._mic_opening = False
         self.mic_button.configure(state="normal")
         self.recording = True
+        self._recording_started = time.monotonic()
         self.mic_button.configure(text="■  Stop")
         self.mic_status.configure(text="listening…", foreground=GREEN)
         self.status.set_stats("listening…", GREEN)
         self._new_translator()
         threading.Thread(target=self._render_speech, daemon=True).start()
         self._start_memory_poll()
+        self._refresh_stt_label()
         # Push-to-talk released while the stream was still opening: honour it.
         if self._ptt_started and not self._ptt_held:
             self._ptt_started = False
@@ -2884,6 +2962,14 @@ class DichApp:
         if archive_path:
             self._refresh_archive_storage()
             self.status.set_hint(f"recording saved to {archive_path.name}")
+        # Lifetime counters: one recording and its wall-clock length.
+        started = self._recording_started
+        self._recording_started = None
+        if started is not None:
+            backend.bump_stats(
+                recordings=1, speech_seconds=int(time.monotonic() - started)
+            )
+        self._refresh_stt_label()
 
     def clear_speech(self):
         """
@@ -3028,6 +3114,99 @@ class DichApp:
                 return index
         return None
 
+    # -- unsaved-settings tracking -----------------------------------------
+    @staticmethod
+    def _int_setting(var, fallback: int) -> int:
+        try:
+            return int(float(str(var.get()).strip()))
+        except (TypeError, ValueError):
+            return fallback
+
+    @staticmethod
+    def _float_setting(var, fallback: float) -> float:
+        try:
+            return float(str(var.get()).strip())
+        except (TypeError, ValueError):
+            return fallback
+
+    def _settings_values(self) -> dict:
+        """Every editable setting, for the unsaved-changes comparison."""
+        return {
+            "model": self.model_var.get().strip(),
+            "source_language": self.source_var.get().strip(),
+            "target_language": self.target_var.get().strip(),
+            "load_model_on_startup": bool(self.preload_var.get()),
+            "mic_device_index": self._selected_device(),
+            "mic_model": self._selected_mic_model(),
+            "refine_every": self._int_setting(
+                self.refine_var, int(backend.CONFIG.get("refine_every", 6))
+            ),
+            "window_seconds": self._float_setting(
+                self.window_var, float(backend.CONFIG.get("window_seconds", 0) or 0)
+            ),
+            "buffer_max_seconds": self._int_setting(
+                self.buffer_var, int(backend.CONFIG.get("buffer_max_seconds", 600))
+            ),
+            "push_to_talk": bool(self.push_to_talk_var.get()),
+            "voice_only_filter": bool(self.voice_only_var.get()),
+            "speech_band_filter": bool(self.band_filter_var.get()),
+            "combine_short_utterances": bool(self.combine_var.get()),
+            "ocr_enabled": bool(self.ocr_var.get()),
+            "archive_audio": bool(self.archive_var.get()),
+            "audio_archive_path": self.archive_path_var.get().strip(),
+            "clean_disfluencies": bool(self.clean_var.get()),
+            "llm_enabled": bool(self.llm_enabled_var.get()),
+            "llm_base_url": self.llm_base_var.get().strip(),
+            "llm_api_key": self.llm_api_var.get().strip(),
+            "llm_model": self.llm_model_var.get().strip(),
+            "llm_instruction": self.llm_instruction_text.get("1.0", "end").strip(),
+        }
+
+    def _settings_dirty(self) -> bool:
+        """True when any setting differs from what was last saved."""
+        try:
+            return self._settings_values() != self._settings_snapshot
+        except Exception:  # noqa: BLE001 - a cosmetic marker, never fatal
+            return False
+
+    def _poll_settings_dirty(self):
+        """
+        Refresh the unsaved-changes marker and the speech-model line.
+
+        A snapshot comparison instead of per-widget traces: programmatic
+        refreshes (device rescan, model refresh) would otherwise read as
+        edits. Cheap enough to run every couple of seconds.
+        """
+        try:
+            dirty = self._settings_dirty()
+        except Exception:  # noqa: BLE001 - a poll must never kill the loop
+            dirty = self._dirty_shown
+        if dirty != self._dirty_shown:
+            self._dirty_shown = dirty
+            self.dirty_label.configure(
+                text="unsaved changes" if dirty else "",
+                foreground=YELLOW if dirty else FG,
+            )
+        self._refresh_stt_label()
+        self._settings_after = self.root.after(1500, self._poll_settings_dirty)
+
+    def _refresh_stt_label(self):
+        """The active speech model, shown under the translation model."""
+        if speech_engine is None:
+            self.stt_label.configure(text="voice: unavailable (install speech deps)")
+            return
+        model = str(
+            backend.CONFIG.get("mic_model") or speech_engine.default_live_model()
+        )
+        backend_name = "GPU" if speech_engine._gpu_available() else "CPU"
+        if getattr(self, "recording", False):
+            state = "listening"
+        elif getattr(self, "_file_transcribing", False):
+            state = "transcribing"
+        else:
+            state = "idle"
+        self.stt_label.configure(text=f"voice: {model} · {state} · {backend_name}")
+
     def save_settings(self):
         chosen = self.model_var.get().strip()
         if chosen and not backend.is_model_cached(chosen):
@@ -3058,9 +3237,17 @@ class DichApp:
                 "load_model_on_startup": bool(self.preload_var.get()),
                 "mic_device_index": self._selected_device(),
                 "mic_model": self._selected_mic_model(),
-                "refine_every": int(self.refine_var.get()),
-                "window_seconds": float(self.window_var.get()),
-                "buffer_max_seconds": int(self.buffer_var.get()),
+                "refine_every": self._int_setting(
+                    self.refine_var, int(backend.CONFIG.get("refine_every", 6))
+                ),
+                "window_seconds": self._float_setting(
+                    self.window_var,
+                    float(backend.CONFIG.get("window_seconds", 0) or 0),
+                ),
+                "buffer_max_seconds": self._int_setting(
+                    self.buffer_var,
+                    int(backend.CONFIG.get("buffer_max_seconds", 600)),
+                ),
                 "push_to_talk": bool(self.push_to_talk_var.get()),
                 "voice_only_filter": bool(self.voice_only_var.get()),
                 "speech_band_filter": bool(self.band_filter_var.get()),
@@ -3089,6 +3276,10 @@ class DichApp:
         backend.reload_config()
         self._refresh_models()
         self._refresh_archive_storage()
+        self._settings_snapshot = self._settings_values()
+        self._dirty_shown = False
+        self.dirty_label.configure(text="", foreground=FG)
+        self._refresh_stt_label()
         self.settings_status.configure(text="Saved — model reloaded", foreground=GREEN)
 
     def test_llm(self):
@@ -3133,13 +3324,137 @@ class DichApp:
         self.status.set_hint(f"cleared {count} cached translation(s)")
 
     def _on_clean_toggled(self):
-        """Persist the cleanup toggle so the next translator picks it up."""
-        backend.CONFIG["clean_disfluencies"] = bool(self.clean_var.get())
+        """A toggle alone changes nothing on disk — only Save does."""
 
-    # -- microphone archive -------------------------------------------------
     def _on_archive_toggled(self):
-        """Persist the archive toggle so recording picks it up next time."""
-        backend.CONFIG["archive_audio"] = bool(self.archive_var.get())
+        """A toggle alone changes nothing on disk — only Save does."""
+
+    # -- stats for nerds -----------------------------------------------------
+    def show_stats(self):
+        """Open the Stats for nerds window; it refreshes while it is open."""
+        if self._stats_window is not None and self._stats_window.winfo_exists():
+            self._stats_window.lift()
+            return
+        window = tk.Toplevel(self.root)
+        self._stats_window = window
+        window.title("Stats for nerds")
+        window.transient(self.root)
+        window.geometry("540x440")
+        window.protocol("WM_DELETE_WINDOW", self._close_stats)
+
+        frame = tk.Frame(window, bg=BG)
+        frame.pack(fill="both", expand=True, padx=theme.SPACE_3, pady=theme.SPACE_3)
+        self._stats_labels = {}
+
+        def section(title):
+            tk.Label(
+                frame,
+                text=title,
+                bg=BG,
+                fg=FG,
+                font=(theme.FONT_FAMILY, 12, "bold"),
+            ).pack(anchor="w", pady=(theme.SPACE_2, theme.SPACE_1))
+
+        def row(key, label):
+            tk.Label(frame, text=label, bg=BG, fg=SUBTLE, font=theme.FONT_SMALL).pack(
+                anchor="w"
+            )
+            value = tk.Label(frame, text="…", bg=BG, fg=FG, font=theme.FONT_SMALL)
+            value.pack(anchor="w")
+            self._stats_labels[key] = value
+
+        section("Last generation")
+        row("llm_model", "model")
+        row("encode", "encode — prompt speed")
+        row("decode", "decode — generation speed")
+        row("tokens", "tokens in → out")
+        row("memory", "peak memory")
+        section("Voice")
+        row("stt", "speech model")
+        row("stt_state", "state")
+        section("Lifetime")
+        row("words", "words translated")
+        row("sentences", "sentences transcribed")
+        row("speech", "speech recorded and transcribed")
+        row("runs", "runs")
+
+        self._fill_stats()
+        self._stats_poll(window)
+
+    def _stats_poll(self, window):
+        if not window.winfo_exists():
+            self._stats_window = None
+            return
+        self._fill_stats()
+        self._stats_after = self.root.after(2000, lambda: self._stats_poll(window))
+
+    def _close_stats(self):
+        if self._stats_after is not None:
+            try:
+                self.root.after_cancel(self._stats_after)
+            except Exception:  # noqa: BLE001 - shutdown races the poll
+                pass
+            self._stats_after = None
+        if self._stats_window is not None and self._stats_window.winfo_exists():
+            self._stats_window.destroy()
+        self._stats_window = None
+
+    def _fill_stats(self):
+        labels = self._stats_labels
+        llm = dict(backend.LLM_STATS)
+        if llm:
+            labels["llm_model"].configure(text=str(llm.get("model", "")))
+            labels["encode"].configure(
+                text=(
+                    f"{llm.get('prompt_tps', 0.0):.0f} tok/s "
+                    f"({llm.get('prompt_tokens', 0)} prompt tokens)"
+                )
+            )
+            labels["decode"].configure(
+                text=f"{llm.get('generation_tps', 0.0):.1f} tok/s"
+            )
+            labels["tokens"].configure(
+                text=f"{llm.get('prompt_tokens', 0)} → {llm.get('generation_tokens', 0)}"
+            )
+            labels["memory"].configure(text=f"{llm.get('peak_memory_gb', 0.0):.2f} GB")
+        else:
+            labels["llm_model"].configure(text="— nothing generated yet —")
+
+        if speech_engine is None:
+            labels["stt"].configure(text="unavailable")
+            labels["stt_state"].configure(text="speech deps missing")
+        else:
+            model = str(
+                backend.CONFIG.get("mic_model") or speech_engine.default_live_model()
+            )
+            backend_name = "GPU" if speech_engine._gpu_available() else "CPU"
+            labels["stt"].configure(text=f"{model} ({backend_name})")
+            if self.recording:
+                state = "listening"
+            elif self._file_transcribing:
+                state = "transcribing"
+            else:
+                state = "idle"
+            labels["stt_state"].configure(text=state)
+
+        stats = backend.get_stats()
+        labels["words"].configure(text=f"{stats.get('words_translated', 0)} words")
+        labels["sentences"].configure(
+            text=f"{stats.get('sentences_transcribed', 0)} sentences"
+        )
+        seconds = int(stats.get("speech_seconds", 0))
+        hours, rem = divmod(seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        shown = f"{hours}h {minutes}m {secs}s" if hours else f"{minutes}m {secs}s"
+        labels["speech"].configure(text=shown)
+        labels["runs"].configure(
+            text=(
+                f"{stats.get('translations', 0)} translations · "
+                f"{stats.get('files_transcribed', 0)} files · "
+                f"{stats.get('recordings', 0)} recordings · "
+                f"{stats.get('cache_hits', 0)} cache hits"
+            )
+        )
 
     def _browse_archive_folder(self):
         from tkinter import filedialog
@@ -3250,7 +3565,18 @@ class DichApp:
         messagebox.showerror(title, f"{title}:\n\n{exc}")
 
     def _on_close(self):
+        if self._settings_snapshot and self._settings_dirty():
+            answer = messagebox.askyesnocancel(
+                "Unsaved settings",
+                "Settings have been changed but not saved.\n\n"
+                "Save them before quitting?",
+            )
+            if answer is None:
+                return  # cancelled — keep the window open
+            if answer:
+                self.save_settings()
         self.recording = False
+        self._close_stats()
         try:
             from . import speech_engine
 

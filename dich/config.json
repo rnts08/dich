@@ -7,7 +7,7 @@
     "mlx-community/Qwen3-4B-Instruct-2507-4bit"
   ],
   "mic_device_index": 0,
-  "mic_model": "small",
+  "mic_model": "",
   "stt_backend": "auto",
   "voice_only_filter": true,
   "speech_band_filter": true,

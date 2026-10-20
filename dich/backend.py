@@ -110,7 +110,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "fallback_models": ["mlx-community/Qwen3-4B-Instruct-2507-4bit"],
     # --- microphone ---
     "mic_device_index": None,  # null = the system default microphone
-    "mic_model": "small",  # keeps up with a live speaker at 2s windows
+    # Empty = the machine's default: large-v3-turbo on the GPU (31x realtime,
+    # so the accurate model is also the fast one), small on the CPU (the only
+    # model that keeps up at a 2s window).
+    "mic_model": "",
     # auto -> GPU (mlx) when mlx-audio can reach the GPU, else CPU. Measured on
     # this machine: large-v3-turbo is 3.1x realtime on the CPU and 31x on the
     # GPU, so "auto" removes the CPU's accuracy/latency tradeoff.
@@ -1062,6 +1065,10 @@ class TranslationResult:
     tokens_per_second: float = 0.0
     elapsed: float = 0.0
     batches: int = 1
+    # Live generation speeds, when the run went through stream_generate.
+    prompt_tps: float = 0.0
+    generation_tps: float = 0.0
+    peak_memory_gb: float = 0.0
 
 
 def count_words(text: str) -> int:
@@ -1082,6 +1089,48 @@ def count_words(text: str) -> int:
 
 _ENGINE_LOCK = threading.Lock()
 _ENGINES: Dict[str, "LocalEngine"] = {}
+
+# Statistics from the most recent generation (the "Stats for nerds" view).
+# mlx-lm's final GenerationResponse carries the whole generation's throughput.
+LLM_STATS: Dict[str, Any] = {}
+
+# Lifetime counters, persisted in config.json under "stats".
+_STATS_LOCK = threading.Lock()
+
+
+def get_stats() -> Dict[str, int]:
+    """The lifetime counters so far."""
+    stats = CONFIG.get("stats")
+    return dict(stats) if isinstance(stats, dict) else {}
+
+
+def bump_stats(**deltas) -> Dict[str, int]:
+    """
+    Add to the lifetime counters and persist them in config.json.
+
+    Called from worker threads (translation, speech, re-scan paths), so the
+    read-modify-write happens under a lock and merges with whatever else is
+    on disk instead of writing the whole file.
+    """
+    with _STATS_LOCK:
+        stats = get_stats()
+        for key, delta in deltas.items():
+            stats[key] = int(stats.get(key, 0)) + int(delta)
+        CONFIG["stats"] = stats
+        data: Dict[str, Any] = {}
+        if CONFIG_PATH.exists():
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        data["stats"] = stats
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except OSError as e:
+            logger.warning(f"Could not write usage stats: {e}")
+    return dict(stats)
 
 
 class LocalEngine:
@@ -1208,6 +1257,7 @@ class LocalEngine:
         model, tokenizer = self.load()
         prompt = self.render_prompt(messages)
         parts: List[str] = []
+        last = None
         for response in stream_generate(
             model,
             tokenizer,
@@ -1215,11 +1265,31 @@ class LocalEngine:
             max_tokens=max_tokens,
             sampler=make_sampler(temp=0.0),  # greedy: translation must be stable
         ):
+            last = response
             if response.text:
                 parts.append(response.text)
                 if on_token is not None:
                     on_token(response.text)
         text = _trim_stop_tokens("".join(parts))
+        if last is not None:
+            # The final response carries the whole generation's throughput —
+            # what the Stats for nerds view shows.
+            LLM_STATS.clear()
+            LLM_STATS.update(
+                {
+                    "model": self.model_name,
+                    "prompt_tokens": int(getattr(last, "prompt_tokens", 0) or 0),
+                    "generation_tokens": int(
+                        getattr(last, "generation_tokens", 0) or 0
+                    ),
+                    "prompt_tps": float(getattr(last, "prompt_tps", 0.0) or 0.0),
+                    "generation_tps": float(
+                        getattr(last, "generation_tps", 0.0) or 0.0
+                    ),
+                    "peak_memory_gb": float(getattr(last, "peak_memory", 0.0) or 0.0),
+                    "at": time.time(),
+                }
+            )
         return text, self.count_tokens(text)
 
     def run_block(self, text: str, model: Optional[str] = None):
@@ -1381,6 +1451,7 @@ def translate_text(
         hit = cache_get(source)
         if hit is not None:
             logger.info("Cache hit, skipping translation")
+            bump_stats(cache_hits=1)
             return TranslationResult(
                 text=hit,
                 cached=True,
@@ -1438,6 +1509,11 @@ def translate_text(
         if use_cache:
             cache_put(source, out)
 
+        # Attach the generation's live speeds when the run produced them
+        # (a fallback retry leaves the stats of the attempt that succeeded).
+        llm = dict(LLM_STATS) if LLM_STATS.get("at", 0) >= progress.started_at else {}
+        bump_stats(translations=1, words_translated=count_words(out))
+
         return TranslationResult(
             text=out,
             model=current,
@@ -1448,6 +1524,9 @@ def translate_text(
             tokens_per_second=progress.tokens_out / max(time.time() - started, 1e-6),
             elapsed=time.time() - started,
             batches=len(chunks),
+            prompt_tps=float(llm.get("prompt_tps", 0.0) or 0.0),
+            generation_tps=float(llm.get("generation_tps", 0.0) or 0.0),
+            peak_memory_gb=float(llm.get("peak_memory_gb", 0.0) or 0.0),
         )
 
     raise RuntimeError(f"All candidate models failed. Last error: {last_error}")

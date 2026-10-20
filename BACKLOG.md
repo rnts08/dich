@@ -53,6 +53,11 @@ Working today, verified against the code rather than assumed:
   a download-size warning for uncached models.
 - **Menu bar, design tokens, rounded controls, markdown rendering, buffer-memory
   readout, licence and About.**
+- **Settings** — explicit Save with an unsaved-changes marker and a
+  quit-time warning, a machine-fitted speech-model picker (GPU default,
+  GPU-only models hidden without a GPU), the active speech model shown
+  under the translation model, and a Stats-for-nerds panel (LLM encode/
+  decode speeds, lifetime words/sentences/speech-time totals).
 - **Tests** — a 349-case suite (341 fast + 8 model goldens) under `tests/`,
   run locally by the pre-commit hook (CI is deliberately off; see below).
 

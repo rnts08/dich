@@ -157,6 +157,8 @@ def test_rebuild_recent_menu_lists_files(monkeypatch, backend):
 
 # -- clean quit -------------------------------------------------------------
 def test_on_close_saves_geometry_unloads_and_destroys(monkeypatch, backend):
+    from types import MethodType
+
     saved = {}
     unloaded = []
     destroyed = []
@@ -164,12 +166,15 @@ def test_on_close_saves_geometry_unloads_and_destroys(monkeypatch, backend):
     monkeypatch.setattr(ui.speech_engine, "stop_mic_stream", lambda: None)
     app = SimpleNamespace(
         recording=True,
+        _settings_snapshot={},
         root=SimpleNamespace(
             geometry=lambda: "900x700+5+5",
             destroy=lambda: destroyed.append(True),
         ),
         _save_config_fields=lambda u: saved.update(u),
     )
+    app._settings_dirty = MethodType(ui.DichApp._settings_dirty, app)
+    app._close_stats = lambda: None
 
     ui.DichApp._on_close(app)
 

@@ -277,7 +277,7 @@ In Settings → Microphone:
 | Setting | Meaning |
 |---|---|
 | **Input device** | Which microphone. *System default* follows macOS. |
-| **Speech model** | `tiny` → `large-v3-turbo`. Only runs while recording. |
+| **Speech model** | Defaults to the GPU model (`large-v3-turbo`) on a Metal machine and `small` on CPU-only ones; GPU-only models (Qwen3-ASR) are offered only when a GPU is present. |
 | **Voice-only filter** | Reject windows that are not speech (fans, keyboards, room tone) before the model sees them. |
 | **Speech-band filter** | Keep only the frequencies a voice uses (~80 Hz–7 kHz), so hum, rumble and hiss are removed before the gate and the model. |
 | **Clean up speech** | Remove stutters, repeated words and filler sounds automatically before translating. |
@@ -462,6 +462,23 @@ The status dot means:
 | orange | `loading…` | model is being loaded |
 | green | `ready` | model resident, can translate |
 | red | `not loaded` | no model resident yet |
+
+Under the translation model a second line shows the **active speech model**:
+`voice: large-v3-turbo · listening · GPU` — model, state (idle / listening /
+transcribing) and backend.
+
+## Settings
+
+**Save** writes every setting; until then the tab shows **unsaved changes**
+next to it, and quitting asks whether to save first (Save / Discard /
+Cancel). The active speech model line updates on Save.
+
+**Stats for nerds** (Settings → Statistics) opens a live panel: the last
+generation's encode speed (prompt tok/s) and decode speed (tok/s), tokens
+in → out, peak memory, the active speech model and its state, and lifetime
+totals — words translated, sentences transcribed, speech time recorded and
+transcribed, and run counts. Counters persist in `config.json` under
+`stats`.
 
 ## Commit messages
 

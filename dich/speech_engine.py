@@ -116,6 +116,27 @@ SPEECH_MODELS = [
     ("qwen3-1.7b", "Qwen3-ASR 1.7B — strong, GPU only"),
 ]
 SPEECH_MODEL_IDS = [name for name, _label in SPEECH_MODELS]
+# Models that can only run on the GPU backend (mlx-audio). Hidden from the
+# picker when no Metal GPU is reachable; the faster-whisper sizes run
+# everywhere (on the GPU via mlx-audio, on the CPU via ctranslate2).
+GPU_ONLY_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
+
+
+def stt_model_choices() -> tuple:
+    """
+    (labels, ids) for the Settings speech-model picker, fitted to this machine.
+
+    Without a Metal GPU the GPU-only models are not offered at all, and the
+    default falls to the fastest CPU model that keeps up. With a GPU the
+    accurate model is the default (see `default_live_model`).
+    """
+    gpu = _gpu_available()
+    pairs = [
+        (name, label)
+        for name, label in SPEECH_MODELS
+        if gpu or name not in GPU_ONLY_MODELS
+    ]
+    return [label for _name, label in pairs], [name for name, _label in pairs]
 
 
 def speech_model_label(model: str) -> str:

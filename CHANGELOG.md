@@ -6,6 +6,35 @@ All notable changes to Dịch. Versions are tagged `v<VERSION>` by
 The app is strictly Vietnamese → English. Version policy: a patch bump per
 fix or feature, a minor bump when a milestone begins.
 
+## 0.2.43 — 2026-10-20
+
+### Added
+- **Unsaved-settings protection**: Settings shows an *unsaved changes*
+  marker whenever anything drifts from the last save (snapshot comparison,
+  so programmatic refreshes never read as edits), and quitting asks Save /
+  Discard / Cancel. Checkbox toggles no longer write config behind the Save
+  button — Save is the single write path.
+- **GPU-first speech models**: the speech-model default is now the machine's
+  default (`large-v3-turbo` on Metal, `small` on CPU-only); GPU-only models
+  (Qwen3-ASR) are offered in the picker only when a GPU is reachable, and a
+  saved model the machine cannot run falls back to the default. Configs
+  carrying the old CPU-era seed upgrade once at startup.
+- **Active speech model in the title area**: a second line under the
+  translation model shows `voice: <model> · idle/listening/transcribing ·
+  GPU/CPU`.
+- **Stats for nerds** (Settings → Statistics): a live panel with the last
+  generation's encode speed (prompt tok/s), decode speed, tokens in → out
+  and peak memory — captured from `stream_generate`'s final response — plus
+  lifetime totals persisted in `config.json`: words translated, sentences
+  transcribed, speech time recorded and transcribed, translations, files,
+  recordings, cache hits. The status bar prefers the generation's own
+  decode speed for its tok/s figure.
+
+### Changed
+- `TranslationResult` carries `prompt_tps`, `generation_tps` and
+  `peak_memory_gb`; `backend.LLM_STATS` holds the last generation's numbers;
+  `backend.bump_stats()` accumulates the lifetime counters under a lock.
+
 ## 0.2.42 — 2026-10-18
 
 The live microphone path was repaired after the loopback work exposed a
