@@ -108,9 +108,8 @@ Planning and setup documents:
 | Path | Purpose |
 |---|---|
 | `INSTALL.md` | clean-machine setup, step by step |
+| `TODO.md` | the single list of todos, bugs, enhancements and constraints |
 | `CHANGELOG.md` | what each release changed |
-| `BACKLOG.md` | the prioritised list of what to pick up next |
-| `ROADMAP.md` | milestones and why the project is shaped the way it is |
 | `packaging/PACKAGING.md` | bundling a double-clickable `.app` (deferred) |
 
 ## Translate tab
@@ -425,9 +424,8 @@ The version policy:
 - **0.4.x** — translation features
 - **0.5.x** — tests and release
 
-`ROADMAP.md` tracks the longer-horizon milestones; `BACKLOG.md` is the
-prioritised list of what to pick up next; `CHANGELOG.md` records what each
-release changed.
+`TODO.md` is the single list of what is left — todos, bugs, enhancements
+and constraints; `CHANGELOG.md` records what each release changed.
 
 Bump a patch for every fix, feature, or change; bump a minor when starting a new
 milestone (for example 0.1.x → 0.2.0 when speech-to-text begins).

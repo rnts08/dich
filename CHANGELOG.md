@@ -6,6 +6,12 @@ All notable changes to Dịch. Versions are tagged `v<VERSION>` by
 The app is strictly Vietnamese → English. Version policy: a patch bump per
 fix or feature, a minor bump when a milestone begins.
 
+## Unreleased
+
+### Changed
+- `ROADMAP.md` and `BACKLOG.md` are gone: every open todo, bug, enhancement
+  and constraint now lives in a single `TODO.md`.
+
 ## 0.2.43 — 2026-10-20
 
 ### Added
@@ -39,7 +45,7 @@ fix or feature, a minor bump when a milestone begins.
 
 The live microphone path was repaired after the loopback work exposed a
 shipped bug, and a recorded buffer can now get a second transcription pass.
-See `BACKLOG.md` for the full aliasing investigation.
+See `TODO.md` for the aliasing investigation's place in the plan.
 
 ### Added
 - **Re-scan** (Speech → Re-scan ▾): re-transcribe an archived recording — or
@@ -76,7 +82,8 @@ See `BACKLOG.md` for the full aliasing investigation.
   `_on_audio` through its own full-duplex stream. macOS refuses two
   half-duplex streams on one device in one process (AUHAL −10863); one
   duplex stream works.
-- `BACKLOG.md` and `ROADMAP.md` reconciled with what actually shipped:
+- The planning docs (`ROADMAP.md`, `BACKLOG.md`) were reconciled with what
+  actually shipped (they have since been consolidated into `TODO.md`):
   four done items struck from the remaining list, Milestone 0.2.5 checked
   off with its commits, Milestone 0.6 (other languages) descoped, the plamo
   cache note closed after verifying the model is gone from config and cache.
